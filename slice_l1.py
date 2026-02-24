@@ -27,9 +27,9 @@ class SliceL1mMTC:
         self.reset()
 
     def reset(self):
-        self.ue_ids = np.array([], dtype = np.int64)
+        self.ue_ids = np.array([], dtype = int)
         self.repetitions = np.array([], dtype = np.int16)
-        self.t_start = np.array([], dtype = np.int64)
+        self.t_start = np.array([], dtype = int)
         self.slice_ran_ids = np.array([], dtype = np.int16)
         self.time = 0
         self.n_users = 0
@@ -51,7 +51,7 @@ class SliceL1mMTC:
         self.n_prbs = n_prbs
 
     def get_state(self):
-        state = np.array([], dtype = np.float32)
+        state = np.array([], dtype = float)
         for slice_ran in self.slices_ran:
             state = np.concatenate((state, slice_ran.get_state()), axis=0) 
         return state
@@ -171,7 +171,7 @@ class SliceL1eMBB:
         return reward, violations
 
     def get_state(self):
-        state = np.array([], dtype = np.float32)
+        state = np.array([], dtype = float)
         for slice_ran in self.slices_ran:
             state = np.concatenate((state, slice_ran.get_state()), axis=0) 
         return state

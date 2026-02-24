@@ -25,6 +25,7 @@ class NodeB():
         n_variables = 0
         for slice_l1 in self.slices_l1:
             n_variables += slice_l1.get_n_variables()
+            print('n_variables = {}'.format(n_variables))
         return n_variables
 
     def reset_info(self):
@@ -38,9 +39,10 @@ class NodeB():
             slice_l1.slot()
 
     def get_state(self):
-        state = np.array([], dtype = np.float32)
+        state = np.array([], dtype = float)
         for l1 in self.slices_l1:
             state = np.concatenate((state, l1.get_state()), axis=None)
+            print(state)
         return state
     
     def get_info(self, violations = 0, SLA_labels = 0):
@@ -50,8 +52,8 @@ class NodeB():
 
     def compute_reward(self):
         '''checks if the SLA is fulfilled for each slice'''
-        SLA_labels = np.zeros(self.n_slices_l1, dtype = np.int)
-        violations = np.zeros(self.n_slices_l1, dtype = np.int)
+        SLA_labels = np.zeros(self.n_slices_l1, dtype = int)
+        violations = np.zeros(self.n_slices_l1, dtype = int)
         for i, l1 in enumerate(self.slices_l1):
             SLA_labels[i], violations[i] = l1.compute_reward()
         return SLA_labels, violations

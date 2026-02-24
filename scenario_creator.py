@@ -10,7 +10,7 @@ create_kbrl_agent
 
 """
 
-import gym
+import gymnasium as gym
 from itertools import count
 from node_b import NodeB
 from slice_l1 import SliceL1eMBB, SliceL1mMTC

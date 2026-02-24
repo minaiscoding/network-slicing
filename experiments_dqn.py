@@ -3,25 +3,15 @@
 '''
 @author: juanjosealcaraz
 
-This script evaluates DQN, provided by stable-baselines, in 3 network-slicing scenarios. 
-
-For each scenario the script launches 30 simulation runs.
-
-The learning phase lasts 20000 steps, and the inference phase lasts 5000 steps
-
-The results of the K-th run on scenario N, are stored in:
-
-./results/scenario_N/DQN/history_K.npz (learning phase)
-./results/scenario_N/DQN_t/history_K.npz (inference phase)
-
+Evaluates DQN in network-slicing scenarios.
 '''
 
 import os
 import concurrent.futures as cf
 from numpy.random import default_rng
 from scenario_creator import create_env
-from stable_baselines.common.cmd_util import make_vec_env
-from stable_baselines import DQN
+from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3 import DQN
 from wrapper import DQNWrapper
 
 SCENARIO = 3
@@ -33,62 +23,67 @@ CONTROL_STEPS = 30000
 PENALTY = 1000
 SLOTS_PER_STEP = 50
 PRBS = [200, 150, 100, 70]
-
 run_list = list(range(RUNS))
 
 class Evaluator():
-    def __init__(self, scenario = SCENARIO):
+    def __init__(self, scenario=SCENARIO):
         self.scenario = scenario
-        self.train_path = './results/scenario_{}/DQN/'.format(scenario)
-        self.test_path = './results/scenario_{}/DQN_t/'.format(scenario)
-        if not os.path.isdir(self.train_path):
-            try:
-                os.makedirs(self.train_path)
-            except OSError:
-                print ('Creation of the directory {} failed'.format(self.train_path))
-            else:
-                print ('Successfully created the directory {}'.format(self.train_path))
-        if not os.path.isdir(self.test_path):
-            try:
-                os.makedirs(self.test_path)
-            except OSError:
-                print ('Creation of the directory {} failed'.format(self.test_path))
-            else:
-                print ('Successfully created the directory {}'.format(self.test_path))
+        self.train_path = f'./results/scenario_{scenario}/DQN/'
+        self.test_path = f'./results/scenario_{scenario}/DQN_t/'
+        os.makedirs(self.train_path, exist_ok=True)
+        os.makedirs(self.test_path, exist_ok=True)
     
-    def evaluate(self, i):
-        rng = default_rng(seed = i)
-        env = create_env(rng, self.scenario, penalty = PENALTY)
-        node_env = DQNWrapper(env, steps = TRAIN_STEPS, 
-                        control_steps = CONTROL_STEPS, 
-                        env_id = i, 
-                        path = self.train_path,
-                        verbose = False)
-        print('wrapped environment created')
-        env = make_vec_env(lambda: node_env, n_envs=1)
-        print('vectorised environment created')
-        agent = DQN('MlpPolicy', env, verbose=True)
-        print('DQN agent created...')
-        agent.learn(total_timesteps = TRAIN_STEPS)
-        print('trainning done!')
+    def evaluate(self, run_id):
+        rng = default_rng(seed=run_id)
+
+        # ----------------- Training -----------------
+        env = create_env(rng, self.scenario, penalty=PENALTY)
+        node_env = DQNWrapper(
+            env,
+            steps=TRAIN_STEPS,
+            control_steps=CONTROL_STEPS,
+            env_id=run_id,
+            path=self.train_path,
+            verbose=False
+        )
+        print('Wrapped environment created for training')
+        vec_env = make_vec_env(lambda: node_env, n_envs=1)
+        print('Vectorized environment created for training')
+
+        agent = DQN('MlpPolicy', vec_env, verbose=True)
+        agent.learn(total_timesteps=TRAIN_STEPS)
+        print('Training done!')
         node_env.save_results()
-        print('DQN results saved.')
+        print('Training results saved.')
+
+        # ----------------- Evaluation -----------------
         print('Test starts...')
-        env = create_env(rng, self.scenario, penalty = PENALTY)
-        node_env = DQNWrapper(env, steps = EVALUATION_STEPS,
-                        control_steps = CONTROL_STEPS,
-                        env_id = i, 
-                        path = self.test_path,
-                        verbose = False)
-        print('wrapped TEST environment created')
-        obs = node_env.reset()
-        action, state = agent.predict(obs, deterministic = True)
-        for i in range(EVALUATION_STEPS):
-            action, state = agent.predict(obs, state = state, deterministic = True)
-            obs, _, _, _ = node_env.step(action)
-        print('evaluation done')
+        env = create_env(rng, self.scenario, penalty=PENALTY)
+        node_env = DQNWrapper(
+            env,
+            steps=EVALUATION_STEPS,
+            control_steps=CONTROL_STEPS,
+            env_id=run_id,
+            path=self.test_path,
+            verbose=False
+        )
+        print('Wrapped environment created for evaluation')
+
+        # Reset returns (obs, info)
+        obs, _ = node_env.reset()
+        state = None
+        for _ in range(EVALUATION_STEPS):
+            # Only pass observation array to predict
+            action, state = agent.predict(obs, state=state, deterministic=True)
+            obs, reward, terminated, truncated, info = node_env.step(action)
+            if terminated or truncated:
+                obs, _ = node_env.reset()
+                state = None
+
+        print('Evaluation done')
         node_env.save_results()
-        print('results saved')
+        print('Evaluation results saved.')
+
 
 if __name__=='__main__':
     evaluator = Evaluator()

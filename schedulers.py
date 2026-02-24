@@ -27,11 +27,11 @@ class ProportionalFair:
         '''
         # create auxiliary data structures
         n_ues = len(ues)
-        ue_rbs = np.zeros(n_ues, dtype = np.int)
-        ue_mcs = np.zeros(n_ues, dtype = np.int)
-        ue_queue = np.zeros(n_ues, dtype = np.int)
-        ue_rate = np.zeros(n_ues, dtype = np.int)
-        ue_bits = np.zeros(n_ues, dtype = np.int)
+        ue_rbs = np.zeros(n_ues, dtype = int)
+        ue_mcs = np.zeros(n_ues, dtype = int)
+        ue_queue = np.zeros(n_ues, dtype = int)
+        ue_rate = np.zeros(n_ues, dtype = int)
+        ue_bits = np.zeros(n_ues, dtype = int)
         ue_th = np.zeros(n_ues)
 
         # extract ue information

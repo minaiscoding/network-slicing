@@ -91,8 +91,8 @@ class SliceRANmMTC:
     def reset(self):
         self.reset_state()
         self.reset_info()
-        self.period = np.ones((self.n_devices), dtype=np.int64)
-        self.t_to_arrival = np.zeros((self.n_devices), dtype=np.int64)
+        self.period = np.ones((self.n_devices), dtype=int)
+        self.t_to_arrival = np.zeros((self.n_devices), dtype=int)
         self.devices = []
         for i in range(self.n_devices):
             repetitions = self.rng.choice(self.repetition_set)
@@ -125,7 +125,7 @@ class SliceRANmMTC:
         self.slot_counter = 0
 
     def reset_state(self):
-        self.state = np.full((len(self.state_variables)), 0, dtype = np.float32)
+        self.state = np.full((len(self.state_variables)), 0, dtype = float)
 
     def get_n_variables(self):
         return len(self.state_variables)
@@ -273,7 +273,7 @@ class SliceRANeMBB:
         self.slot_counter = 0
 
     def reset_state(self):
-        self.state = np.full((len(self.state_variables)), 0, dtype = np.float32)
+        self.state = np.full((len(self.state_variables)), 0, dtype = float)
     
     def update_info(self):
         queue = 0

@@ -9,8 +9,9 @@ Created on December 13, 2021
 """
 
 import numpy as np
-import gym
-from gym import spaces
+import gymnasium as gym
+from gymnasium import spaces
+from torch import seed
 
 class RanSlice(gym.Env):
     ''' 
@@ -23,17 +24,21 @@ class RanSlice(gym.Env):
         self.n_slices = node_b.n_slices_l1
         self.n_variables = node_b.get_n_variables()
         self.action_space = spaces.Box(low=0, high = self.n_prbs,
-                                        shape=(self.n_slices,), dtype=np.int)
+                                        shape=(self.n_slices,), dtype=int)
         self.observation_space = spaces.Box(low=-float('inf'), high=+float('inf'),
-                                            shape=(self.n_variables,), dtype=np.float)
+                                            shape=(self.n_variables,), dtype=float)
 
-    def reset(self):
+    def reset(self, *, seed=None, options=None):
         """
-        Reset the environment 
+        Reset the environment
+        Returns a tuple: (obs, info)
         """
+        if seed is not None:
+            np.random.seed(seed)  # optional, reseed RNG
+
         state = self.node_b.reset()
-
-        return state # reward, done, info can't be included
+        info = {}  # additional info can be empty or include relevant info
+        return state, info
 
     def step(self, action):
         """
