@@ -36,7 +36,7 @@ class RanSliceEnv(CMDP):
 
     _support_envs: ClassVar[list[str]] = [ENV_ID]
     need_auto_reset_wrapper  = False
-    need_time_limit_wrapper  = False
+    need_time_limit_wrapper  = True
     _num_envs                = 1
 
     def __init__(self, env_id: str, **kwargs) -> None:
@@ -107,17 +107,22 @@ class RanSliceEnv(CMDP):
             info = {str(k): v for k, v in info.items()}
         else:
             info = {}
-
         if terminated or truncated:
+    # Save final obs before reset
             final_obs = torch.as_tensor(obs, dtype=torch.float32)
+    
+    # Reset and get new obs
             new_obs, _ = self._env.reset()
             obs = torch.as_tensor(new_obs, dtype=torch.float32)
+    
+    # OmniSafe requires this
             info["final_observation"] = final_obs
         else:
             obs = torch.as_tensor(obs, dtype=torch.float32)
             info["final_observation"] = obs
 
         return (
+            obs,
             obs,
             torch.as_tensor(reward,     dtype=torch.float32),
             torch.as_tensor(cost,       dtype=torch.float32),

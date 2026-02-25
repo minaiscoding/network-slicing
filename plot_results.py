@@ -2,11 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 Plot DQN results for Scenario 3 only
+Plot DQN results for Scenario 3 only
 """
 import numpy as np
 import matplotlib.pyplot as plt
 import os
 
+# training results
 # training results
 WINDOW = 400
 START = 0
@@ -30,10 +32,22 @@ def movingaverage(values, window):
 
 # --------------------- plot -------------------------------
 dir_path = f'./results/scenario_{scenario}/'
+# --------------------- plot -------------------------------
+dir_path = f'./results/scenario_{scenario}/'
 
 # subplot
 fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(12, 3.5), constrained_layout=True)
+# subplot
+fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(12, 3.5), constrained_layout=True)
 
+for algo, label in zip(algo_names, labels):
+    violations = np.empty([1])
+    actions = np.empty([1])
+    regret = np.empty([1])
+    data = False
+    proposal = False
+    path = f'./results/scenario_{scenario}/{algo}/'
+    runs = 0
 for algo, label in zip(algo_names, labels):
     violations = np.empty([1])
     actions = np.empty([1])
@@ -86,7 +100,17 @@ for algo, label in zip(algo_names, labels):
 
     # plot results
     steps = np.arange(len(actions_mean[0:SPAN]))
+    # plot results
+    steps = np.arange(len(actions_mean[0:SPAN]))
 
+    axs[2].set_title('Resource allocation')
+    axs[2].plot(steps, actions_mean[0:SPAN])
+    axs[2].fill_between(steps, actions_mean[0:SPAN] - 1.697 * actions_std[0:SPAN] / np.sqrt(runs),
+                        actions_mean[0:SPAN] + 1.697 * actions_std[0:SPAN] / np.sqrt(runs), color='#DDDDDD')
+    axs[2].set_ylim((0, prbs))
+    axs[2].set_xlabel('stages')
+    axs[2].set_ylabel('PRBs')
+    axs[2].grid()
     axs[2].set_title('Resource allocation')
     axs[2].plot(steps, actions_mean[0:SPAN])
     axs[2].fill_between(steps, actions_mean[0:SPAN] - 1.697 * actions_std[0:SPAN] / np.sqrt(runs),
@@ -104,7 +128,25 @@ for algo, label in zip(algo_names, labels):
     axs[0].set_ylabel('SLA violations')
     axs[0].legend(loc='best')
     axs[0].grid()
+    axs[0].set_title('SLA violations')
+    axs[0].plot(steps, violations_mean[0:SPAN], label=label)
+    axs[0].fill_between(steps, violations_mean[0:SPAN] - 1.697 * violations_std[0:SPAN] / np.sqrt(runs),
+                        violations_mean[0:SPAN] + 1.697 * violations_std[0:SPAN] / np.sqrt(runs), color='#DDDDDD')
+    axs[0].set_xlabel('stages')
+    axs[0].set_ylabel('SLA violations')
+    axs[0].legend(loc='best')
+    axs[0].grid()
 
+    axs[1].set_title('Cumulative SLA violations')
+    axs[1].plot(steps, regret_mean[0:SPAN], label=label)
+    axs[1].fill_between(steps, regret_mean[0:SPAN] - 1.697 * regret_std[0:SPAN] / np.sqrt(runs),
+                        regret_mean[0:SPAN] + 1.697 * regret_std[0:SPAN] / np.sqrt(runs), color='#DDDDDD')
+    axs[1].set_xlabel('stages')
+    axs[1].set_ylabel('cumulative SLA violations')
+    axs[1].set_ylim((0,15000))
+    axs[1].grid()
+
+fig.savefig('./figures/subplots_scenario3_dqn.png', format='png')
     axs[1].set_title('Cumulative SLA violations')
     axs[1].plot(steps, regret_mean[0:SPAN], label=label)
     axs[1].fill_between(steps, regret_mean[0:SPAN] - 1.697 * regret_std[0:SPAN] / np.sqrt(runs),
