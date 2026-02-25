@@ -73,6 +73,7 @@ class RanSliceEnv(CMDP):
         return torch.as_tensor(obs, dtype=torch.float32), info
 
     def step(self, action: torch.Tensor):
+        # Convert continuous [0,1] action from OmniSafe → integer PRBs
         act = action.cpu().numpy()
         act = np.abs(act)
     

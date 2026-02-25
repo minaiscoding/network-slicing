@@ -28,9 +28,9 @@ class SliceL1mMTC:
 
     def reset(self):
         self.ue_ids = np.array([], dtype = int)
-        self.repetitions = np.array([], dtype = np.int16)
+        self.repetitions = np.array([], dtype = int)
         self.t_start = np.array([], dtype = int)
-        self.slice_ran_ids = np.array([], dtype = np.int16)
+        self.slice_ran_ids = np.array([], dtype = int)
         self.time = 0
         self.n_users = 0
         for slice_ran in self.slices_ran:
