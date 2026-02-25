@@ -3,12 +3,9 @@
 """
 Train PPO-Lag (OmniSafe 0.5.0) on the RanSlice gymnasium environment.
 
-In OmniSafe 0.5.0 the correct base class is `CMDP` (not `BaseEnv`),
-and the registration decorator is `env_register` — both from omnisafe.envs.core.
-
 Usage:
-    python train_ppo_lag.py
-    python train_ppo_lag.py --scenario 1 --epochs 200 --steps 20000
+    python omnitest.py
+    python omnitest.py --scenario 1 --epochs 200 --steps 20000
 """
 
 import argparse
@@ -18,16 +15,15 @@ import numpy as np
 import torch
 import omnisafe
 from omnisafe.envs.core import CMDP, env_register
+from gymnasium import spaces
 
-# ── import your env factory ──────────────────────────────────────────────────
-from create_env import create_env   # the file you shared
+from scenario_creator import create_env
 
 
 # ── Register the custom CMDP env ─────────────────────────────────────────────
 
 ENV_ID = "RanSlicePPOLag-v0"
 
-# Module-level globals so the factory closure survives re-imports
 _RNG     = None
 _SCEN    = 0
 _PENALTY = 100.0
@@ -35,34 +31,22 @@ _PENALTY = 100.0
 
 @env_register
 class RanSliceEnv(CMDP):
-    """
-    OmniSafe 0.5.0 CMDP wrapper around the RanSlice gymnasium environment.
-
-    Required interface:
-      - _support_envs  : list of accepted env-id strings
-      - __init__(env_id, **kwargs)
-      - step(action: Tensor) -> (obs, reward, cost, terminated, truncated, info)
-      - reset(**kwargs)      -> (obs: Tensor, info: dict)
-      - set_seed(seed: int)
-      - spec_log(logger)     [no-op is fine]
-    """
 
     _support_envs: ClassVar[list[str]] = [ENV_ID]
     need_auto_reset_wrapper  = True
-    need_time_limit_wrapper  = True
+    need_time_limit_wrapper  = False
+    _num_envs                = 1          # ← required by OmniSafe AutoReset
 
     def __init__(self, env_id: str, **kwargs) -> None:
         super().__init__(env_id)
-
-        # Use the module-level globals set before agent creation
         self._env = create_env(_RNG, _SCEN, penalty=_PENALTY)
-        self._action_space      = self._env.action_space
+        self._n_prbs            = 200     # total PRBs to distribute
+        self._action_space      = spaces.Box(low=0.0, high=1.0, shape=(5,), dtype=np.float32)
         self._observation_space = self._env.observation_space
 
     # ── reset ─────────────────────────────────────────────────────────────────
     def reset(self, seed=None, options=None):
         result = self._env.reset()
-        # Handle old gym API (obs only) vs new (obs, info)
         if isinstance(result, tuple):
             obs, info = result
         else:
@@ -71,10 +55,17 @@ class RanSliceEnv(CMDP):
 
     # ── step ──────────────────────────────────────────────────────────────────
     def step(self, action: torch.Tensor):
+        # Convert continuous [0,1] action from OmniSafe → integer PRBs
         act = action.cpu().numpy()
+        act = np.abs(act)
+        t_action = act.sum() or 1.0
+        act = np.array(
+            [int(np.floor(self._n_prbs * act[i] / t_action)) for i in range(len(act))],
+            dtype=int,
+        )
+
         result = self._env.step(act)
 
-        # Handle old 4-value step API (obs, reward, done, info)
         if len(result) == 4:
             obs, reward, done, info = result
             terminated, truncated = bool(done), False
@@ -82,29 +73,28 @@ class RanSliceEnv(CMDP):
             obs, reward, terminated, truncated, info = result
             terminated, truncated = bool(terminated), bool(truncated)
 
-        # ── cost signal ───────────────────────────────────────────────────────
-        # Replace with your actual SLA-violation signal if available, e.g.:
-        #   cost = float(info.get("sla_violation", False))
         cost = float(reward < 0)
 
         return (
-            torch.as_tensor(obs,    dtype=torch.float32),
-            torch.as_tensor(reward, dtype=torch.float32),
-            torch.as_tensor(cost,   dtype=torch.float32),
-            terminated,
-            truncated,
+            torch.as_tensor(obs,        dtype=torch.float32),
+            torch.as_tensor(reward,     dtype=torch.float32),
+            torch.as_tensor(cost,       dtype=torch.float32),
+            torch.as_tensor(terminated, dtype=torch.bool),
+            torch.as_tensor(truncated,  dtype=torch.bool),
             info,
         )
 
-    # ── seed ──────────────────────────────────────────────────────────────────
-    def set_seed(self, seed: int) -> None:
-        pass  # rng fixed at construction; override if you want per-run seeding
+    def render(self, *args, **kwargs):
+        if hasattr(self._env, "render"):
+            return self._env.render()
+        return None
 
-    # ── optional per-epoch logging hook ──────────────────────────────────────
+    def set_seed(self, seed: int) -> None:
+        pass
+
     def spec_log(self, logger) -> None:
         pass
 
-    # ── close ─────────────────────────────────────────────────────────────────
     def close(self) -> None:
         self._env.close()
 
@@ -155,7 +145,6 @@ def main():
     print(f"  cost_limit={args.cost_limit}  device={args.device}")
     print(f"{'='*60}\n")
 
-    # Set module-level globals before OmniSafe instantiates the env
     _RNG     = np.random.default_rng(args.seed)
     _SCEN    = args.scenario
     _PENALTY = args.penalty
@@ -187,7 +176,6 @@ def main():
     print("Starting training …\n")
     agent.learn()
 
-    # ── evaluate ──────────────────────────────────────────────────────────────
     print("\nEvaluating trained policy …")
     agent.plot(smooth=1)
     agent.evaluate(num_episodes=10)
