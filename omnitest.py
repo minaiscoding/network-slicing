@@ -73,7 +73,6 @@ class RanSliceEnv(CMDP):
         return torch.as_tensor(obs, dtype=torch.float32), info
 
     def step(self, action: torch.Tensor):
-        # Convert continuous [0,1] action from OmniSafe → integer PRBs
         act = action.cpu().numpy()
         act = np.abs(act)
     
@@ -153,6 +152,7 @@ def build_custom_cfgs(epochs: int, steps_per_epoch: int, device: str) -> dict:
         },
         "algo_cfgs": {
             "steps_per_epoch": steps_per_epoch,
+            "update_iters": 1,
         },
         "logger_cfgs": {
             "use_wandb": False,

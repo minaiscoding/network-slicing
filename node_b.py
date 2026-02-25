@@ -25,7 +25,6 @@ class NodeB():
         n_variables = 0
         for slice_l1 in self.slices_l1:
             n_variables += slice_l1.get_n_variables()
-            print('n_variables = {}'.format(n_variables))
         return n_variables
 
     def reset_info(self):
