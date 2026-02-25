@@ -205,3 +205,39 @@ class TimerWrapper(gym.Wrapper):
 
         # return obs, reward, done, info
         return obs, reward, False, {0:0} # for keras rl this avoids problems
+    
+
+class OmniWrapper(ReportWrapper):
+    """
+    OmniSafe-compatible wrapper for your existing RanSlice environment.
+    """
+    def __init__(self, env, steps=20000, control_steps=30000, env_id=1,
+                 extra_samples=10, path='./logs/', verbose=False, n_variables=None):
+        super().__init__(env, steps=steps, control_steps=control_steps,
+                         env_id=env_id, extra_samples=extra_samples,
+                         path=path, verbose=verbose, n_variables=n_variables)
+        
+        # OmniSafe expects Box actions; scale to number of slices
+        self.action_space = spaces.Box(low=0, high=1, shape=(self.n_slices,), dtype=np.float32)
+
+    def step(self, action):
+        """
+        Convert normalized [0,1] actions to PRBs per slice, call env.step,
+        return reward and cost separately for OmniSafe.
+        """
+        if len(action) > self.n_slices:
+            action = np.abs(action)
+            t_action = action.sum() or 1
+            action = np.array([np.floor(self.n_prbs * action[i]/t_action) for i in range(self.n_slices)], dtype=int)
+
+        obs, reward, terminated, truncated, info = super().step(action)
+
+        # OmniSafe convention: reward & cost
+        info['reward'] = reward
+        info['cost'] = -reward
+
+        return obs, reward, terminated, truncated, info
+
+    def reset(self, *, seed=None, options=None):
+        obs, info = super().reset(seed=seed, options=options)
+        return obs, info
