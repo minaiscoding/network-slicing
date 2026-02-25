@@ -55,7 +55,6 @@ class RanSlice(gym.Env):
         else:
             # if SLA fulfilled the reward is the amount of free resources
             reward = max(0, self.node_b.n_prbs - action.sum())
-
         return state, float(reward), False, info
 
     def render(self):
