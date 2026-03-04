@@ -55,7 +55,7 @@ class RanSliceEnv(CMDP):
         )
 
         self._max_episode_steps = 500
-        self._n_prbs            = 200
+        self._n_prbs            = self._env.n_prbs  # Read from environment, not hard-coded
         self._step_count        = 0  # track steps for forced truncation
         self._action_space      = spaces.Box(low=0.0, high=1.0, shape=(self._env.n_slices + 1,), dtype=float)
         self._observation_space = spaces.Box(

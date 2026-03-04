@@ -324,3 +324,13 @@ class SliceRANeMBB:
             self.state[i] = self.info[var] / self.norm_const[var]        
         return self.state
 
+
+class SliceRANURLC(SliceRANeMBB):
+    '''
+    Ultra-Reliable Low-Latency Communications (URLLC) slice.
+    Extends eMBB with tighter SLAs and different traffic parameters.
+    '''
+    def __init__(self, rng, user_counter, id, SLA, CBR_description, VBR_description, state_variables, norm_const, slots_per_step, slot_length = 1e-3):
+        super().__init__(rng, user_counter, id, SLA, CBR_description, VBR_description, state_variables, norm_const, slots_per_step, slot_length)
+        self.type = 'URLLC'
+

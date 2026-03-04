@@ -226,3 +226,12 @@ class SliceL1eMBB:
         # update slice_ran info
         for slice_ran in self.slices_ran:
             slice_ran.update_info()
+
+class SliceL1URLLC(SliceL1eMBB):
+    '''
+    Layer 1 functionality for URLLC slices.
+    Inherits from SliceL1eMBB with same scheduling behavior but stricter resource allocation.
+    '''
+    def __init__(self, rng, snr_generator, n_prbs, slices_ran, scheduler):
+        super().__init__(rng, snr_generator, n_prbs, slices_ran, scheduler)
+        self.type = 'URLLC'
