@@ -199,6 +199,8 @@ class SliceL1eMBB:
 
         queued_data = 0
         for ue in self.ues:
+    
+
             # data arrival
             ue.traffic_step()
             # update queued_data
