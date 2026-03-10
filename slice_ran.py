@@ -39,6 +39,14 @@ class UE:
         self.bits = 0 # assigned bits
         self.prbs = 0 # assigned prbs
         self.p = 0 # reception probability
+        
+        # packet latency tracking (in ms)
+        self.total_latency = 0.0 # accumulated latency for transmitted packets in this observation period
+        self.transmitted_packets = 0 # count of transmission events in this observation period
+
+        # packet loss tracking
+        self.tx_attempts = 0
+        self.tx_failures = 0
     
     def estimate_snr(self, snr):
         self.snr = snr
@@ -49,8 +57,22 @@ class UE:
         self.queue += self.new_bits
     
     def transmission_step(self, received):
+        # Track packet loss
+        if self.prbs > 0:
+            self.tx_attempts += 1
+            if not received:
+                self.tx_failures += 1
+
         if not received:
             self.bits = 0
+        
+        # Track latency: accumulate queue size (in slot equivalents) for each transmitted bit
+        # This represents the average time each bit spends in queue (in milliseconds)
+        if self.bits > 0 and self.queue > 0:
+            avg_queue_during_tx = (self.queue + max(self.queue - self.bits, 0)) / 2.0
+            self.total_latency += avg_queue_during_tx * self.slot_length * 1000  # convert to ms
+            self.transmitted_packets += 1
+        
         self.queue = max(self.queue - self.bits, 0)
         self.th = self.a * self.th + self.b * self.bits / self.slot_length
 
@@ -196,9 +218,8 @@ class SliceRANeMBB:
         '''Admission control for CBR users'''
         slots = max(self.slot_counter,1)
         time = slots * self.slot_length
-        cbr_prb = self.info['cbr_prb'] / slots
         cbr_th = self.info['cbr_th'] / time
-        if cbr_prb >= self.SLA['cbr_prb'] or cbr_th >= self.SLA['cbr_th']:
+        if cbr_th >= self.SLA['cbr_th']:
             return False
         return True
 
@@ -268,9 +289,16 @@ class SliceRANeMBB:
         return arrivals, departures
 
     def reset_info(self):
-        self.info = {'cbr_traffic': 0, 'cbr_th': 0, 'cbr_prb': 0, 'cbr_queue':0, 'cbr_snr': 0,\
-                    'vbr_traffic': 0, 'vbr_th': 0, 'vbr_prb': 0, 'vbr_queue': 0, 'vbr_snr': 0}
+        self.info = {'cbr_traffic': 0, 'cbr_th': 0,  'cbr_latency': 0, 'cbr_snr': 0,\
+                    'vbr_traffic': 0, 'vbr_th': 0,  'vbr_latency': 0, 'vbr_snr': 0}
         self.slot_counter = 0
+        # Reset UE latency counters for new observation period
+        for ue in self.cbr_ues.values():
+            ue.total_latency = 0.0
+            ue.transmitted_packets = 0
+        for ue in self.vbr_ues.values():
+            ue.total_latency = 0.0
+            ue.transmitted_packets = 0
 
     def reset_state(self):
         self.state = np.full((len(self.state_variables)), 0, dtype = float)
@@ -279,42 +307,39 @@ class SliceRANeMBB:
         queue = 0
         snr = 0
         n = 0
+        latency = 0
         for ue in self.cbr_ues.values():
             self.info['cbr_traffic'] += ue.new_bits
             self.info['cbr_th'] += ue.bits
-            self.info['cbr_prb'] += ue.prbs
-            queue += ue.queue
+            latency += ue.total_latency
             snr += ue.e_snr
             n += 1
-        n = max(n,1)
-        self.info['cbr_queue'] += queue/n
+        n = max(n, 1)
+        self.info['cbr_latency'] += latency / n if n > 0 else 0
         self.info['cbr_snr'] += snr/n
 
-        queue = 0
+        latency = 0
         snr = 0
         n = 0
         for ue in self.vbr_ues.values():
             self.info['vbr_traffic'] += ue.new_bits
             self.info['vbr_th'] += ue.bits
-            self.info['vbr_prb'] += ue.prbs
-            queue += ue.queue
+            latency += ue.total_latency
             snr += ue.e_snr
             n += 1
-        n = max(n,1)
-        self.info['vbr_queue'] += queue/n
+        n = max(n, 1)
+        self.info['vbr_latency'] += latency / n if n > 0 else 0
         self.info['vbr_snr'] += snr/n
 
     def compute_reward(self):
         '''assesses SLA violations'''
         cbr_th = self.info['cbr_th']/self.observation_time > self.SLA['cbr_th']
-        cbr_prb = self.info['cbr_prb']/self.slots_per_step > self.SLA['cbr_prb']
-        cbr_queue = self.info['cbr_queue']/self.slots_per_step < self.SLA['cbr_queue']
+        cbr_latency = self.info['cbr_latency']/self.slots_per_step > self.SLA['cbr_latency']
         vbr_th = self.info['vbr_th']/self.observation_time > self.SLA['vbr_th']
-        vbr_prb = self.info['vbr_prb']/self.slots_per_step > self.SLA['vbr_prb']
-        vbr_queue = self.info['vbr_queue']/self.slots_per_step < self.SLA['vbr_queue']
-        # the slice has to guarantee the objective delay for cbr and vbr if their traffics do not surpass the maximum
-        cbr_fulfilled = cbr_th or cbr_prb or cbr_queue 
-        vbr_fulfilled = vbr_th or vbr_prb or vbr_queue
+        vbr_latency = self.info['vbr_latency']/self.slots_per_step > self.SLA['vbr_latency']
+        # the slice has to guarantee the objective latency for cbr and vbr if their traffics do not surpass the maximum
+        cbr_fulfilled = cbr_th or cbr_latency 
+        vbr_fulfilled = vbr_th or vbr_latency
         SLA_fulfilled = cbr_fulfilled and vbr_fulfilled
         return not(SLA_fulfilled)
 
@@ -329,8 +354,79 @@ class SliceRANURLC(SliceRANeMBB):
     '''
     Ultra-Reliable Low-Latency Communications (URLLC) slice.
     Extends eMBB with tighter SLAs and different traffic parameters.
+    Uses MAX latency per UE instead of average for stricter QoS.
+    Tracks packet loss rate per UE for reliability SLA.
     '''
     def __init__(self, rng, user_counter, id, SLA, CBR_description, VBR_description, state_variables, norm_const, slots_per_step, slot_length = 1e-3):
         super().__init__(rng, user_counter, id, SLA, CBR_description, VBR_description, state_variables, norm_const, slots_per_step, slot_length)
         self.type = 'URLLC'
+
+    def reset_info(self):
+        '''Override to include packet loss fields'''
+        super().reset_info()
+        self.info['cbr_pkt_loss'] = 0.0
+        self.info['vbr_pkt_loss'] = 0.0
+        # Reset UE packet loss counters for new observation period
+        for ue in self.cbr_ues.values():
+            ue.tx_attempts = 0
+            ue.tx_failures = 0
+        for ue in self.vbr_ues.values():
+            ue.tx_attempts = 0
+            ue.tx_failures = 0
+
+    def update_info(self):
+        '''Override to use MAX latency and worst-case packet loss for URLLC'''
+        snr = 0
+        n = 0
+        max_latency = 0
+        max_pkt_loss = 0.0
+        for ue in self.cbr_ues.values():
+            self.info['cbr_traffic'] += ue.new_bits
+            self.info['cbr_th'] += ue.bits
+            if ue.transmitted_packets > 0:
+                ue_latency = ue.total_latency / ue.transmitted_packets
+                max_latency = max(max_latency, ue_latency)
+            if ue.tx_attempts > 0:
+                ue_loss = ue.tx_failures / ue.tx_attempts
+                max_pkt_loss = max(max_pkt_loss, ue_loss)
+            snr += ue.e_snr
+            n += 1
+        n = max(n, 1)
+        self.info['cbr_latency'] += max_latency
+        self.info['cbr_pkt_loss'] = max(self.info.get('cbr_pkt_loss', 0.0), max_pkt_loss)
+        self.info['cbr_snr'] += snr/n
+
+        max_latency = 0
+        max_pkt_loss = 0.0
+        snr = 0
+        n = 0
+        for ue in self.vbr_ues.values():
+            self.info['vbr_traffic'] += ue.new_bits
+            self.info['vbr_th'] += ue.bits
+            if ue.transmitted_packets > 0:
+                ue_latency = ue.total_latency / ue.transmitted_packets
+                max_latency = max(max_latency, ue_latency)
+            if ue.tx_attempts > 0:
+                ue_loss = ue.tx_failures / ue.tx_attempts
+                max_pkt_loss = max(max_pkt_loss, ue_loss)
+            snr += ue.e_snr
+            n += 1
+        n = max(n, 1)
+        self.info['vbr_latency'] += max_latency
+        self.info['vbr_pkt_loss'] = max(self.info.get('vbr_pkt_loss', 0.0), max_pkt_loss)
+        self.info['vbr_snr'] += snr/n
+
+    def compute_reward(self):
+        '''Override to include packet loss in SLA assessment'''
+        cbr_th = self.info['cbr_th']/self.observation_time > self.SLA['cbr_th']
+        cbr_latency = self.info['cbr_latency']/self.slots_per_step > self.SLA['cbr_latency']
+        cbr_pkt_loss = self.info.get('cbr_pkt_loss', 0.0) > self.SLA.get('cbr_pkt_loss', 1.0)
+        vbr_th = self.info['vbr_th']/self.observation_time > self.SLA['vbr_th']
+        vbr_latency = self.info['vbr_latency']/self.slots_per_step > self.SLA['vbr_latency']
+        vbr_pkt_loss = self.info.get('vbr_pkt_loss', 0.0) > self.SLA.get('vbr_pkt_loss', 1.0)
+        # URLLC must satisfy latency AND packet loss constraints
+        cbr_fulfilled = cbr_th  or (cbr_latency and cbr_pkt_loss)
+        vbr_fulfilled = vbr_th or (vbr_latency and vbr_pkt_loss)
+        SLA_fulfilled = cbr_fulfilled and vbr_fulfilled
+        return not(SLA_fulfilled)
 

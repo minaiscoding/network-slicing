@@ -45,7 +45,6 @@ class ReportWrapper(gym.Wrapper):
         self.extra_samples = extra_samples
         
         self.reset_history()
-        print(f'n_prbs = {self.n_prbs}, n_slices = {self.n_slices}, n_variables = {self.n_variables}')
     
     def reset_history(self):
         self.violation_history = np.zeros(self.steps, dtype=int)
@@ -102,21 +101,33 @@ class ReportWrapper(gym.Wrapper):
         if change_name:
             self.file_path = f'{self.path}evaluation_{self.env_id}.npz'
 
+from itertools import product
+import numpy as np
+from gymnasium import spaces
+
 class DQNWrapper(ReportWrapper):
-    def __init__(self, env, steps=2000, control_steps=500, env_id=1, 
-                 extra_samples=10, path='./logs/', verbose=False, n_variables=None):
-        super().__init__(env, steps=steps, control_steps=control_steps, 
-                         env_id=env_id, extra_samples=extra_samples, 
+    def __init__(self, env, steps=2000, control_steps=500, env_id=1,
+                 extra_samples=10, path='./logs/', verbose=False,
+                 n_variables=None, n_slices=2):
+
+        super().__init__(env, steps=steps, control_steps=control_steps,
+                         env_id=env_id, extra_samples=extra_samples,
                          path=path, verbose=verbose, n_variables=n_variables)
+
+        self.n_slices = n_slices
+
         g_eMBB = 2
-        max_eMBB = 51
+        max_prb = 51
+
         self.actions = []
-        a = list(range(0, max_eMBB, g_eMBB))
-        for a1, a2 in product(a, a):
-            if a1 + a2 <= self.n_prbs:
-                self.actions.append(np.array([a1, a2], dtype=int))
+        a = list(range(0, max_prb, g_eMBB))
+
+        for combo in product(a, repeat=self.n_slices):
+            if sum(combo) <= self.n_prbs:
+                self.actions.append(np.array(combo, dtype=int))
+
         self.action_space = spaces.Discrete(len(self.actions))
-    
+
     def step(self, action):
         a = self.actions[action]
         return super().step(a)
@@ -161,8 +172,6 @@ class TimerWrapper(gym.Wrapper):
         self.step_counter = 0
         self.simtime = 0
         self.time_samples = np.zeros((self.steps), dtype = float)
-        print('n_prbs = {}'.format(self.n_prbs))
-        print('n_slices = {}'.format(self.n_slices))
   
     def reset(self):
         """

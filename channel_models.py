@@ -191,7 +191,9 @@ class SINRSelectiveFading:
         return fading_vector + self.users[user_id]['nominal_sinr'] # this is a column array
         
     def extract_user(self, user_id):
-        self.users.pop(user_id)
+        # Only remove if user exists (user might depart before ever transmitting)
+        if user_id in self.users:
+            self.users.pop(user_id)
 
 
 class SNRGenerator:

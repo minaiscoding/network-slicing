@@ -49,7 +49,7 @@ scenario_4 = {
 
 # URLLC scenario - can be used programmatically but not in default scenarios list
 scenario_5 = {
-    'n_prbs': 100,
+    'n_prbs': 200,
     'n_embb': 1,
     'n_mmtc': 1,
     'n_urllc': 1
@@ -78,16 +78,14 @@ VBR_description = {
 
 SLA_embb = {
     'cbr_th': 10e6, 
-    'cbr_prb': 20, # 30
-    'cbr_queue': 10e4, # 5e4
+    'cbr_latency': 10, # 10ms latency per packet
     'vbr_th': 15e6, # 10e6 
-    'vbr_prb': 30, # 40
-    'vbr_queue': 15e4
+    'vbr_latency': 10 # 10ms latency per packet
     }
 
-state_variables_embb = ['cbr_traffic','cbr_th', 'cbr_prb', \
-                        'cbr_queue', 'cbr_snr', 'vbr_traffic', \
-                        'vbr_th', 'vbr_prb', 'vbr_queue', 'vbr_snr']
+state_variables_embb = ['cbr_traffic','cbr_th', \
+                        'cbr_latency', 'cbr_snr', 'vbr_traffic', \
+                        'vbr_th',  'vbr_latency', 'vbr_snr']
 
 # -------------------- mMTC parameters -------------------------
 
@@ -121,14 +119,14 @@ URLLC_VBR_description = {
 
 SLA_urllc = {
     'cbr_th': 5e6,        # stricter: 5 Mbps (vs eMBB's 10 Mbps)
-    'cbr_prb': 10,        # stricter: 10 PRBs (vs eMBB's 20)
-    'cbr_queue': 5e3,     # stricter: 5 kB (vs eMBB's 100 kB)
+    'cbr_latency': 5,     # stricter: 5ms max latency per UE (vs eMBB's 10ms avg)
+    'cbr_pkt_loss': 0.001, # max 0.1% packet loss rate for CBR
     'vbr_th': 7e6,        # stricter: 7 Mbps (vs eMBB's 15 Mbps)
-    'vbr_prb': 15,        # stricter: 15 PRBs (vs eMBB's 30)
-    'vbr_queue': 5e3      # stricter: 5 kB (vs eMBB's 150 kB)
+    'vbr_latency': 5,     # stricter: 5ms max latency per UE (vs eMBB's 10ms avg)
+    'vbr_pkt_loss': 0.001  # max 0.1% packet loss rate for VBR
 }
 
-state_variables_urllc = state_variables_embb  # same structure, different parameters
+state_variables_urllc = state_variables_embb + ['cbr_pkt_loss', 'vbr_pkt_loss']
 
 
 
@@ -151,13 +149,11 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
     norm_const_embb = {
         'cbr_traffic': 5e6 * time_per_step,
         'cbr_th': 10e6 * time_per_step,
-        'cbr_prb': 25 * slots_per_step,
-        'cbr_queue': 10e4 * slots_per_step,
+        'cbr_latency': 20 * slots_per_step,  # normalize latency to 20ms range
         'cbr_snr': 35 * slots_per_step,
         'vbr_traffic': 5e6 * time_per_step, 
         'vbr_th': 10e6 * time_per_step, 
-        'vbr_prb': 35 * slots_per_step, 
-        'vbr_queue': 10e4 * slots_per_step, 
+        'vbr_latency': 20 * slots_per_step,  # normalize latency to 20ms range
         'vbr_snr': 35 * slots_per_step
     }
 
@@ -174,14 +170,14 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
     norm_const_urllc = {
         'cbr_traffic': 2e6 * time_per_step,
         'cbr_th': 5e6 * time_per_step,
-        'cbr_prb': 15 * slots_per_step,
-        'cbr_queue': 5e3 * slots_per_step,
+        'cbr_latency': 10 * slots_per_step,  # normalize latency to 10ms range
         'cbr_snr': 35 * slots_per_step,
+        'cbr_pkt_loss': 1.0,                  # already a ratio 0-1
         'vbr_traffic': 2e6 * time_per_step, 
         'vbr_th': 7e6 * time_per_step, 
-        'vbr_prb': 20 * slots_per_step, 
-        'vbr_queue': 5e3 * slots_per_step, 
-        'vbr_snr': 35 * slots_per_step
+        'vbr_latency': 10 * slots_per_step,  # normalize latency to 10ms range
+        'vbr_snr': 35 * slots_per_step,
+        'vbr_pkt_loss': 1.0                   # already a ratio 0-1
     }
 
     # ------------------- auxiliary functions -----------------------
