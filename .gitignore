@@ -19,7 +19,7 @@ venv
 runs
 lib/
 lib64/
-results/*
+results/
 parts/
 sdist/
 nohup.out
