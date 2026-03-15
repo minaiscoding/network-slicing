@@ -42,7 +42,6 @@ class NodeB():
         state = np.array([], dtype = float)
         for l1 in self.slices_l1:
             state = np.concatenate((state, l1.get_state()), axis=None)
-            print(state)
         return state
     
     def get_info(self, violations = 0, SLA_labels = 0):

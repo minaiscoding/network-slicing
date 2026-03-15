@@ -19,8 +19,10 @@ venv
 runs
 lib/
 lib64/
+results/*
 parts/
 sdist/
+nohup.out
 var/
 wheels/
 pip-wheel-metadata/

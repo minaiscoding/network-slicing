@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Train PPO-Lag (OmniSafe 0.5.0) on the RanSlice gymnasium environment.
+Train PPO (OmniSafe 0.5.0) on the RanSlice gymnasium environment.
 
 Usage:
     python omnitest.py
@@ -86,7 +86,7 @@ class RanSliceEnv(CMDP):
 
         alloc_prbs = np.array([int(np.floor(a * self._n_prbs)) for a in alloc], dtype=int)
         result = self._env.step(alloc_prbs)
-        print(f'Action taken: {alloc_prbs}, Excess bonus: {excess:.4f}')
+
 
         if len(result) == 4:
             obs, reward, done, info = result
@@ -95,7 +95,7 @@ class RanSliceEnv(CMDP):
             obs, reward, terminated, truncated, info = result
             terminated, truncated = bool(terminated), bool(truncated)
 
-        reward = float(reward) + float(excess)
+        
         cost = 0.0
 
         self._step_count += 1
@@ -144,8 +144,7 @@ class RanSliceEnv(CMDP):
         return self._max_episode_steps  # 500, was wrongly returning 1 before
 
 
-def build_custom_cfgs(epochs: int, steps_per_epoch: int,
-                      cost_limit: float, device: str) -> dict:
+def build_custom_cfgs(epochs: int, steps_per_epoch: int, device: str) -> dict:
     return {
         "train_cfgs": {
             "total_steps": epochs * steps_per_epoch,
@@ -164,12 +163,11 @@ def build_custom_cfgs(epochs: int, steps_per_epoch: int,
 def main():
     global _RNG, _SCEN, _PENALTY, _TOTAL_STEPS
 
-    parser = argparse.ArgumentParser(description="Train PPO-Lag on RanSlice env")
-    parser.add_argument("--scenario",   type=int,   default=0)
+    parser = argparse.ArgumentParser(description="Train PPO on RanSlice env")
+    parser.add_argument("--scenario",   type=int,   default=4)
     parser.add_argument("--seed",       type=int,   default=42)
     parser.add_argument("--epochs",     type=int,   default=10)
     parser.add_argument("--steps",      type=int,   default=1000)  # must be >= 500 (max_episode_steps)
-    parser.add_argument("--cost_limit", type=float, default=25.0)
     parser.add_argument("--penalty",    type=float, default=100.0)
     parser.add_argument("--device",     type=str,   default="cpu")
     args = parser.parse_args()
@@ -182,18 +180,16 @@ def main():
     custom_cfgs = build_custom_cfgs(
         epochs=args.epochs,
         steps_per_epoch=args.steps,
-        cost_limit=args.cost_limit,
         device=args.device,
     )
 
     agent = omnisafe.Agent(
-        algo="PPOLag",
+        algo="PPO",
         env_id=ENV_ID,
         custom_cfgs=custom_cfgs,
     )
 
     agent.learn()
-    print(agent)
     agent.plot(smooth=1)
 
     agent.evaluate(num_episodes=1)

@@ -80,14 +80,17 @@ SLA_embb = {
     'cbr_th': 10e6, 
     'cbr_prb': 20, # 30
     'cbr_queue': 10e4, # 5e4
+
     'vbr_th': 15e6, # 10e6 
     'vbr_prb': 30, # 40
-    'vbr_queue': 15e4
+    'vbr_queue': 15e4,
+
     }
 
 state_variables_embb = ['cbr_traffic','cbr_th', 'cbr_prb', \
-                        'cbr_queue', 'cbr_snr', 'vbr_traffic', \
-                        'vbr_th', 'vbr_prb', 'vbr_queue', 'vbr_snr']
+                        'cbr_queue', 'cbr_snr',  \
+                        'vbr_traffic', 'vbr_th', 'vbr_prb', \
+                        'vbr_queue', 'vbr_snr']
 
 # -------------------- mMTC parameters -------------------------
 
@@ -106,29 +109,36 @@ SLA_mmtc = {
 # -------------------- URLLC parameters -------------------------
 
 URLLC_CBR_description = {
-    'lambda': 10.0/60.0,  # 10 arrivals/min (higher frequency than eMBB's 2/min)
-    't_mean': 5.0,        # shorter session duration (vs eMBB's 30s)
-    'bit_rate': 200000    # lower bit rate - 200kbps (vs eMBB's 500kbps)
+#    'lambda': 1.0/60.0, # low traffic
+    'lambda': 2.0/60.0,
+    't_mean': 30.0,
+    'bit_rate': 500000
 }
 
 URLLC_VBR_description = {
-    'lambda': 20.0/60.0,  # 20 arrivals/min (higher frequency than eMBB's 5/min)
-    't_mean': 5.0,        # shorter session duration (vs eMBB's 30s)
-    'p_size': 500,        # smaller packets (vs eMBB's 1000)
-    'b_size': 200,        # smaller bursts (vs eMBB's 500)
-    'b_rate': 2           # faster burst rate (vs eMBB's 1)
+#    'lambda': 1.0/60.0, # low traffic
+    'lambda': 5.0/60.0,
+    't_mean': 30.0,
+    'p_size': 1000,
+    'b_size': 500,
+    'b_rate': 1
 }
 
 SLA_urllc = {
-    'cbr_th': 5e6,        # stricter: 5 Mbps (vs eMBB's 10 Mbps)
-    'cbr_prb': 10,        # stricter: 10 PRBs (vs eMBB's 20)
-    'cbr_queue': 5e3,     # stricter: 5 kB (vs eMBB's 100 kB)
-    'vbr_th': 7e6,        # stricter: 7 Mbps (vs eMBB's 15 Mbps)
-    'vbr_prb': 15,        # stricter: 15 PRBs (vs eMBB's 30)
-    'vbr_queue': 5e3      # stricter: 5 kB (vs eMBB's 150 kB)
+    'cbr_th': 10e6, 
+    'cbr_prb': 20, # 30
+    'cbr_queue': 5e4, # 5e4
+
+    'vbr_th': 15e6, # 10e6 
+    'vbr_prb': 30, # 40
+    'vbr_queue': 10e4,
+
 }
 
-state_variables_urllc = state_variables_embb  # same structure, different parameters
+state_variables_urllc = ['cbr_traffic','cbr_th', 'cbr_prb', \
+                        'cbr_queue', 'cbr_snr', \
+                        'vbr_traffic', 'vbr_th', 'vbr_prb', \
+                        'vbr_queue', 'vbr_snr',  ]
 
 
 
@@ -154,11 +164,15 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
         'cbr_prb': 25 * slots_per_step,
         'cbr_queue': 10e4 * slots_per_step,
         'cbr_snr': 35 * slots_per_step,
+        
+   
         'vbr_traffic': 5e6 * time_per_step, 
         'vbr_th': 10e6 * time_per_step, 
         'vbr_prb': 35 * slots_per_step, 
         'vbr_queue': 10e4 * slots_per_step, 
-        'vbr_snr': 35 * slots_per_step
+        'vbr_snr': 35 * slots_per_step,
+        
+
     }
 
     # -------------------- mMTC normalization constants -----------------------
@@ -177,11 +191,15 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
         'cbr_prb': 15 * slots_per_step,
         'cbr_queue': 5e3 * slots_per_step,
         'cbr_snr': 35 * slots_per_step,
+        
+
         'vbr_traffic': 2e6 * time_per_step, 
         'vbr_th': 7e6 * time_per_step, 
         'vbr_prb': 20 * slots_per_step, 
         'vbr_queue': 5e3 * slots_per_step, 
-        'vbr_snr': 35 * slots_per_step
+        'vbr_snr': 35 * slots_per_step,
+       
+
     }
 
     # ------------------- auxiliary functions -----------------------
