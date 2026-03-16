@@ -15,9 +15,9 @@ from stable_baselines3 import PPO
 from wrapper import ReportWrapper
 
 SCENARIO = 4
-RUNS = 30
+RUNS = 5
 PROCESSES = 4 # 30 if enough threads 
-TRAIN_STEPS = 20
+TRAIN_STEPS = 30000
 EVALUATION_STEPS = 5000
 CONTROL_STEPS = 30000
 PENALTY = 1000
@@ -51,7 +51,7 @@ class Evaluator():
         vec_env = make_vec_env(lambda: node_env, n_envs=1)
         print('Vectorized environment created for training')
 
-        agent = PPO('MlpPolicy', vec_env, verbose=True)
+        agent = PPO('MlpPolicy', vec_env, verbose=True,device='cpu')
         agent.learn(total_timesteps=TRAIN_STEPS)
         print('Training done!')
         node_env.save_results()
@@ -90,12 +90,12 @@ if __name__=='__main__':
     evaluator = Evaluator()
     # ################################################################
     # # use this code for sequential execution
-    #for run in run_list:
+   # for run in run_list:
     #    evaluator.evaluate(run)
     # ################################################################
 
     # ################################################################
     # use this code for parallel execution
     with cf.ProcessPoolExecutor(PROCESSES) as E:
-         list(E.map(evaluator.evaluate, run_list))
+        list(E.map(evaluator.evaluate, run_list))
     # ################################################################
