@@ -14,10 +14,16 @@ dist/
 downloads/
 eggs/
 .eggs/
+omnivenv
+venv
+runs
 lib/
 lib64/
+results/
 parts/
 sdist/
+nohup.out
+nohup.out
 var/
 wheels/
 pip-wheel-metadata/
@@ -136,4 +142,3 @@ cython_debug/
 
 # VS Code settings
 .vscode/
-

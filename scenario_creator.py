@@ -13,8 +13,8 @@ create_kbrl_agent
 import gymnasium as gym
 from itertools import count
 from node_b import NodeB
-from slice_l1 import SliceL1eMBB, SliceL1mMTC
-from slice_ran import SliceRANmMTC, SliceRANeMBB
+from slice_l1 import SliceL1eMBB, SliceL1mMTC, SliceL1URLLC
+from slice_ran import SliceRANmMTC, SliceRANeMBB, SliceRANURLC
 from schedulers import ProportionalFair
 from channel_models import SINRSelectiveFading, MCSCodeset
 from kbrl_control import KBRL_Control, Learner
@@ -47,7 +47,15 @@ scenario_4 = {
     'n_mmtc': 1
 }
 
-scenarios = [scenario_1, scenario_2, scenario_3, scenario_4]
+# URLLC scenario - can be used programmatically but not in default scenarios list
+scenario_5 = {
+    'n_prbs': 100,
+    'n_embb': 1,
+    'n_mmtc': 1,
+    'n_urllc': 1
+}
+
+scenarios = [scenario_1, scenario_2, scenario_3, scenario_4, scenario_5]
 
 
 # -------------------- eMBB parameters -------------------------
@@ -72,14 +80,17 @@ SLA_embb = {
     'cbr_th': 10e6, 
     'cbr_prb': 20, # 30
     'cbr_queue': 10e4, # 5e4
+
     'vbr_th': 15e6, # 10e6 
     'vbr_prb': 30, # 40
-    'vbr_queue': 15e4
+    'vbr_queue': 15e4,
+
     }
 
 state_variables_embb = ['cbr_traffic','cbr_th', 'cbr_prb', \
-                        'cbr_queue', 'cbr_snr', 'vbr_traffic', \
-                        'vbr_th', 'vbr_prb', 'vbr_queue', 'vbr_snr']
+                        'cbr_queue', 'cbr_snr',  \
+                        'vbr_traffic', 'vbr_th', 'vbr_prb', \
+                        'vbr_queue', 'vbr_snr']
 
 # -------------------- mMTC parameters -------------------------
 
@@ -95,7 +106,41 @@ SLA_mmtc = {
     'delay': 300
 }
 
-# -------------------- create environment -------------------------
+# -------------------- URLLC parameters -------------------------
+
+URLLC_CBR_description = {
+#    'lambda': 1.0/60.0, # low traffic
+    'lambda': 2.0/60.0,
+    't_mean': 30.0,
+    'bit_rate': 500000
+}
+
+URLLC_VBR_description = {
+#    'lambda': 1.0/60.0, # low traffic
+    'lambda': 5.0/60.0,
+    't_mean': 30.0,
+    'p_size': 1000,
+    'b_size': 500,
+    'b_rate': 1
+}
+
+SLA_urllc = {
+    'cbr_th': 10e6, 
+    'cbr_prb': 20, # 30
+    'cbr_queue': 5e4, # 5e4
+
+    'vbr_th': 15e6, # 10e6 
+    'vbr_prb': 30, # 40
+    'vbr_queue': 10e4,
+
+}
+
+state_variables_urllc = ['cbr_traffic','cbr_th', 'cbr_prb', \
+                        'cbr_queue', 'cbr_snr', \
+                        'vbr_traffic', 'vbr_th', 'vbr_prb', \
+                        'vbr_queue', 'vbr_snr',  ]
+
+
 
 def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban_2GHz', L1_level = True, penalty = 100):
     '''
@@ -109,6 +154,7 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
     n_prbs = sc['n_prbs']
     n_embb = sc['n_embb']
     n_mmtc = sc['n_mmtc']
+    n_urllc = sc.get('n_urllc', 0)
 
     # -------------------- eMBB normalization constants ----------------------
 
@@ -118,11 +164,15 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
         'cbr_prb': 25 * slots_per_step,
         'cbr_queue': 10e4 * slots_per_step,
         'cbr_snr': 35 * slots_per_step,
+        
+   
         'vbr_traffic': 5e6 * time_per_step, 
         'vbr_th': 10e6 * time_per_step, 
         'vbr_prb': 35 * slots_per_step, 
         'vbr_queue': 10e4 * slots_per_step, 
-        'vbr_snr': 35 * slots_per_step
+        'vbr_snr': 35 * slots_per_step,
+        
+
     }
 
     # -------------------- mMTC normalization constants -----------------------
@@ -133,6 +183,25 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
         'delay': 100 * slots_per_step
     }
 
+    # -------------------- URLLC normalization constants -----------------------
+
+    norm_const_urllc = {
+        'cbr_traffic': 2e6 * time_per_step,
+        'cbr_th': 5e6 * time_per_step,
+        'cbr_prb': 15 * slots_per_step,
+        'cbr_queue': 5e3 * slots_per_step,
+        'cbr_snr': 35 * slots_per_step,
+        
+
+        'vbr_traffic': 2e6 * time_per_step, 
+        'vbr_th': 7e6 * time_per_step, 
+        'vbr_prb': 20 * slots_per_step, 
+        'vbr_queue': 5e3 * slots_per_step, 
+        'vbr_snr': 35 * slots_per_step,
+       
+
+    }
+
     # ------------------- auxiliary functions -----------------------
 
     def new_slice_mmtc(id, rng):
@@ -140,6 +209,9 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
 
     def new_slice_embb(id, rng, user_counter):
         return SliceRANeMBB(rng, user_counter, id, SLA_embb, CBR_description, VBR_description, state_variables_embb, norm_const_embb, slots_per_step)
+
+    def new_slice_urllc(id, rng, user_counter):
+        return SliceRANURLC(rng, user_counter, id, SLA_urllc, URLLC_CBR_description, URLLC_VBR_description, state_variables_urllc, norm_const_urllc, slots_per_step)
 
     # ------------------- environment creation ------------------------
 
@@ -165,6 +237,11 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
             slice_l1_mmtc = SliceL1mMTC(5, slices_ran_mmtc)
             slices_l1.append(slice_l1_mmtc)
 
+        for id in range(n_urllc):
+            slices_ran_urllc = [new_slice_urllc(id, rng, user_counter)]
+            slice_l1_urllc = SliceL1URLLC(rng, snr_generator, 15, slices_ran_urllc, scheduler)
+            slices_l1.append(slice_l1_urllc)
+
     else: # slices are multiplexed in the L1 (the scheduler should handle ues from different slices) 
 
         slices_ran_embb = [new_slice_embb(id, rng, user_counter) for id in range(n_embb)]
@@ -175,6 +252,11 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
             slices_ran_mmtc = [new_slice_mmtc(id, rng) for id in range(n_mmtc)]
             slice_l1_mmtc = SliceL1mMTC(5, slices_ran_mmtc)
             slices_l1.append(slice_l1_mmtc)
+
+        if n_urllc > 0:
+            slices_ran_urllc = [new_slice_urllc(id, rng, user_counter) for id in range(n_urllc)]
+            slice_l1_urllc = SliceL1URLLC(rng, snr_generator, 15, slices_ran_urllc, scheduler)
+            slices_l1.append(slice_l1_urllc)
 
     node = NodeB(slices_l1, slots_per_step, n_prbs)
 
@@ -191,6 +273,8 @@ embb_sec = (2, 8)
 embb_a = (4, 20)
 mmtc_sec = (1, 4)
 mmtc_a = (2, 10)
+urllc_sec = (1, 4)
+urllc_a = (3, 15)
 
 # -------------------- create KBRL agent -------------------------
 
@@ -206,8 +290,10 @@ def create_kbrl_agent(rng, n, accuracy_range = [0.99, 0.999]):
     n_prbs = sc['n_prbs']
     n_embb = sc['n_embb']
     n_mmtc = sc['n_mmtc']
+    n_urllc = sc.get('n_urllc', 0)
     embb_dim = len(state_variables_embb)
     mmtc_dim = len(state_variables_mmtc)
+    urllc_dim = len(state_variables_urllc)
 
     learners = [] 
     i = 0
@@ -232,6 +318,16 @@ def create_kbrl_agent(rng, n, accuracy_range = [0.99, 0.999]):
         learner = Learner(algorithm, slice(i,i+mmtc_dim), initial_action, sec)
         learners.append(learner)
         i += mmtc_dim
+
+    for _ in range(n_urllc):
+        sv = SVvariable()
+        kernel = GaussianKernel(sv,1)
+        algorithm = Projectron(kernel)
+        initial_action = rng.integers(urllc_a[0], urllc_a[1])
+        sec = rng.integers(urllc_sec[0], urllc_sec[1])
+        learner = Learner(algorithm, slice(i,i+urllc_dim), initial_action, sec)
+        learners.append(learner)
+        i += urllc_dim
 
     kbrl_agent = KBRL_Control(learners, n_prbs, alfa = alfa, accuracy_range = accuracy_range)
 

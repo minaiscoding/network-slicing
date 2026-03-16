@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Train PPO-Lag (OmniSafe 0.5.0) on the RanSlice gymnasium environment.
+Train PPO (OmniSafe 0.5.0) on the RanSlice gymnasium environment.
 
 Usage:
     python omnitest.py
@@ -29,12 +29,13 @@ _PENALTY     = 100.0
 _TOTAL_STEPS = 200 * 1000
 
 
+  
 @env_register
 @env_unregister
 class RanSliceEnv(CMDP):
 
     _support_envs: ClassVar[list[str]] = [ENV_ID]
-    need_auto_reset_wrapper  = True
+    need_auto_reset_wrapper  = False
     need_time_limit_wrapper  = True
     _num_envs                = 1
 
@@ -48,17 +49,22 @@ class RanSliceEnv(CMDP):
             env_id=1,
             path='./results/scenario_0/PPOLag/',
             verbose=False,
+            n_slices=raw_env.n_slices,
+            n_prbs=raw_env.n_prbs,
+            n_variables=raw_env.n_variables
         )
 
         self._max_episode_steps = 500
-        self._n_prbs            = 200
-        self._action_space      = spaces.Box(low=0.0, high=1.0, shape=(5,), dtype=float)
+        self._n_prbs            = self._env.n_prbs  # Read from environment, not hard-coded
+        self._step_count        = 0  # track steps for forced truncation
+        self._action_space      = spaces.Box(low=0.0, high=1.0, shape=(self._env.n_slices + 1,), dtype=float)
         self._observation_space = spaces.Box(
             low=-1, high=1,
             shape=(self._env.n_variables,), dtype=float
         )
 
     def reset(self, seed=None, options=None):
+        self._step_count = 0
         result = self._env.reset()
         if isinstance(result, tuple):
             obs, info = result
@@ -69,17 +75,18 @@ class RanSliceEnv(CMDP):
     def step(self, action: torch.Tensor):
         act = action.cpu().numpy()
         act = np.abs(act)
+    
+        # Normalize to sum to 1
         total = act.sum()
-
-        excess = max(0.0, total - 1.0)
-        cost = excess * _PENALTY
-
-        if total > 1.0:
+        if total > 0:
             act = act / total
+        # Now act sums to exactly 1.0, split into 5 alloc + 1 excess
+        alloc = act[:self._env.n_slices]   # sums to < 1.0
+        excess = act[self._env.n_slices]   # saved budget, added to reward
 
-        act = np.array([int(np.floor(a * self._n_prbs)) for a in act], dtype=int)
+        alloc_prbs = np.array([int(np.floor(a * self._n_prbs)) for a in alloc], dtype=int)
+        result = self._env.step(alloc_prbs)
 
-        result = self._env.step(act)
 
         if len(result) == 4:
             obs, reward, done, info = result
@@ -88,24 +95,41 @@ class RanSliceEnv(CMDP):
             obs, reward, terminated, truncated, info = result
             terminated, truncated = bool(terminated), bool(truncated)
 
-        cost = float(cost)
-        if np.isnan(cost):
-            cost = 0.0
+        
+        cost = 0.0
+
+        self._step_count += 1
+        if self._step_count >= self._max_episode_steps:
+            truncated = True
+            self._step_count = 0
 
         if isinstance(info, dict):
             info = {str(k): v for k, v in info.items()}
         else:
             info = {}
+        if terminated or truncated:
+    # Save final obs before reset
+            final_obs = torch.as_tensor(obs, dtype=torch.float32)
+    
+    # Reset and get new obs
+            new_obs, _ = self._env.reset()
+            obs = torch.as_tensor(new_obs, dtype=torch.float32)
+    
+    # OmniSafe requires this
+            info["final_observation"] = final_obs
+        else:
+            obs = torch.as_tensor(obs, dtype=torch.float32)
+            info["final_observation"] = obs
 
         return (
-            torch.as_tensor(obs,        dtype=torch.float32),
+            obs,
+            obs,
             torch.as_tensor(reward,     dtype=torch.float32),
             torch.as_tensor(cost,       dtype=torch.float32),
             torch.as_tensor(terminated, dtype=torch.bool),
             torch.as_tensor(truncated,  dtype=torch.bool),
             info,
         )
-
     def render(self, *args, **kwargs):
         if hasattr(self._env, "render"):
             return self._env.render()
@@ -121,12 +145,11 @@ class RanSliceEnv(CMDP):
         self._env.close()
 
     @property
-    def max_episode_steps(self) -> None:
-        return 1
+    def max_episode_steps(self) -> int:
+        return self._max_episode_steps  # 500, was wrongly returning 1 before
 
 
-def build_custom_cfgs(epochs: int, steps_per_epoch: int,
-                      cost_limit: float, device: str) -> dict:
+def build_custom_cfgs(epochs: int, steps_per_epoch: int, device: str) -> dict:
     return {
         "train_cfgs": {
             "total_steps": epochs * steps_per_epoch,
@@ -136,15 +159,9 @@ def build_custom_cfgs(epochs: int, steps_per_epoch: int,
             "steps_per_epoch": steps_per_epoch,
             "update_iters": 1,
         },
-        "lagrange_cfgs": {
-            "cost_limit": cost_limit,
-            "lagrangian_multiplier_init": 0.001,
-            "lambda_lr": 0.035,
-            "lambda_optimizer": "Adam",
-        },
         "logger_cfgs": {
             "use_wandb": False,
-            "save_model_freq": 10,
+            "save_model_freq": 1,
         },
     }
 
@@ -152,12 +169,11 @@ def build_custom_cfgs(epochs: int, steps_per_epoch: int,
 def main():
     global _RNG, _SCEN, _PENALTY, _TOTAL_STEPS
 
-    parser = argparse.ArgumentParser(description="Train PPO-Lag on RanSlice env")
-    parser.add_argument("--scenario",   type=int,   default=0)
+    parser = argparse.ArgumentParser(description="Train PPO on RanSlice env")
+    parser.add_argument("--scenario",   type=int,   default=4)
     parser.add_argument("--seed",       type=int,   default=42)
-    parser.add_argument("--epochs",     type=int,   default=200)   # ✅ good default
-    parser.add_argument("--steps",      type=int,   default=1000)  # ✅ good default
-    parser.add_argument("--cost_limit", type=float, default=25.0)
+    parser.add_argument("--epochs",     type=int,   default=10)
+    parser.add_argument("--steps",      type=int,   default=1000)  # must be >= 500 (max_episode_steps)
     parser.add_argument("--penalty",    type=float, default=100.0)
     parser.add_argument("--device",     type=str,   default="cpu")
     args = parser.parse_args()
@@ -170,19 +186,19 @@ def main():
     custom_cfgs = build_custom_cfgs(
         epochs=args.epochs,
         steps_per_epoch=args.steps,
-        cost_limit=args.cost_limit,
         device=args.device,
     )
 
     agent = omnisafe.Agent(
-        algo="PPOLag",
+        algo="PPO",
         env_id=ENV_ID,
         custom_cfgs=custom_cfgs,
     )
 
     agent.learn()
     agent.plot(smooth=1)
-    agent.evaluate(num_episodes=10)
+
+    agent.evaluate(num_episodes=1)
 
 
 if __name__ == "__main__":

@@ -35,11 +35,12 @@ class ReportWrapper(gym.Wrapper):
     """
     def __init__(self, env, steps = 2000, control_steps = 500, env_id = 1, extra_samples = 10, path = './logs/', verbose = False):
         # Call the parent constructor, so we can access self.env later
+        
         super(ReportWrapper, self).__init__(env)
         self.action_space = spaces.Box(low=0, high = 1,
-                                        shape=(self.n_slices + 1,), dtype=float)
+                                        shape=(self.env.unwrapped.n_slices + 1,), dtype=float)
         self.observation_space = spaces.Box(low=-1, high=1,
-                                            shape=(self.n_variables,), dtype=float)
+                                            shape=(self.env.unwrapped.n_variables,), dtype=float)
         self.steps = steps
         self.step_counter = 0
         self.control_steps = control_steps
@@ -49,56 +50,64 @@ class ReportWrapper(gym.Wrapper):
         self.file_path = '{}history_{}.npz'.format(path, env_id)
         self.extra_samples = extra_samples # for safety
         self.reset_history()
+        self.n_slices = self.env.unwrapped.n_slices
+        self.n_prbs = self.env.unwrapped.n_prbs
+        self.n_variables = self.env.unwrapped.n_variables
 
-        print('n_prbs = {}'.format(self.n_prbs))
-        print('n_slices = {}'.format(self.n_slices))
+        print('n_prbs = {}'.format(self.env.unwrapped.n_prbs))
+        print('n_slices = {}'.format(self.env.unwrapped.n_slices))
     
     def reset_history(self):
         self.violation_history = np.zeros((self.steps), dtype = int)
         self.reward_history = np.zeros((self.steps), dtype = float)
         self.action_history = np.zeros((self.steps), dtype = int)
   
-    def reset(self):
+    def reset(self, seed=None, options=None):
         """
-        Reset the environment (but only when it is created)
+        Reset the environment
         """
         self.step_counter = 0
-        self.obs = self.env.reset()
+        result = self.env.reset(seed=seed, options=options)
+        # Handle both old (obs,) and new (obs, info) reset signatures
+        if isinstance(result, tuple):
+            self.obs, info = result[0], result[1] if len(result) > 1 else {}
+        else:
+            self.obs, info = result, {}
         if self.verbose:
             print('Environment {} RESET'.format(self.env_id))
-        return self.obs
+        return self.obs, info
 
     def step(self, action):
         """
         :param action: ([float] or int) Action taken by the agent
-        :return: (np.ndarray, float, bool, dict) observation, reward, is the episode over?, additional informations
+        :return: (np.ndarray, float, bool, bool, dict) observation, reward, terminated, truncated, info
         """
-        # this works with actions like [0.5, 0.2, 0.3]
-        if len(action) > self.n_slices: # action = [0.5, 0.2, 0.3]
-            action = abs(action) # no negative values allowed
+        if len(action) > self.n_slices:
+            action = action[:self.n_slices]
+            action = abs(action)
             t_action = action.sum()
             if t_action == 0:
                 t_action = 1
             action = np.array([np.floor(self.n_prbs * action[i]/t_action) for i in range(self.n_slices)], dtype=int)
             # action = np.array([np.floor(self.n_prbs * action[i]/t_action) + 1 for i in range(self.n_slices)], dtype=np.int)
 
-        obs, reward, done, info = self.env.step(action)
+        result = self.env.step(action)
+    
+#   Handle both old 4-value and new 5-value step signatures
+        if len(result) == 5:
+            obs, reward, terminated, truncated, info = result
+            done = terminated or truncated
+        else:
+            obs, reward, done, info = result
+            terminated, truncated = done, False
 
-        # RL algorithms work better with normalized observations between -1 and 1
-        obs = np.clip(obs,-0.5,1.5) 
+        # Normalize observations
+        obs = np.clip(obs, -0.5, 1.5)
         obs = obs - 0.5
         self.obs = obs
 
-        # # (uncomment for NAF and TD3)
-        # # this normalizes the return [-1., 1.]
-        # if reward < 0:
-        # #     reward = reward / (PENALTY * SLICES)
-        #     reward = -1
-        # else:
-        #     reward = reward / self.n_prbs
-
-        # collect historical data
-        violations = info['total_violations']
+        # Collect historical data
+        violations = info.get('total_violations', 0)
 
         if self.step_counter < self.steps:
             self.violation_history[self.step_counter] = violations
@@ -110,12 +119,12 @@ class ReportWrapper(gym.Wrapper):
 
         if self.step_counter % self.control_steps == 0:
             self.save_results()
-        
-        if self.verbose:
-            print('Environment {}: {}/{} steps, reward: {}, violations: {}'.format(self.env_id, self.step_counter, self.steps, reward, info['total_violations']))
 
-        # return obs, reward, done, info
-        return obs, reward, done, {0:0} # for keras rl this avoids problems
+        if self.verbose:
+            print('Environment {}: {}/{} steps, reward: {}, violations: {}'.format(
+                self.env_id, self.step_counter, self.steps, reward, violations))
+
+        return obs, reward, terminated, truncated, {0: 0}
 
     def save_results(self):
         np.savez(self.file_path, violation = self.violation_history, 

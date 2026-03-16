@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Plot DQN results for Scenario 3 only
+Plot PPO results with moving average
 """
 import numpy as np
 import matplotlib.pyplot as plt
@@ -10,18 +10,16 @@ import os
 # training results
 WINDOW = 400
 START = 0
-END = 20000  # up to 20000 steps
+MAX_EPOCHS = 30000  # maximum epochs to display (will use all available if less)
 
-# only DQN
-algo_names = ['DQN']
-labels = ['DQN']
+# only PPO
+algo_names = ['PPO']
+labels = ['PPO']
 
-SPAN = END - START
-
-# only Scenario 3
-scenario = 3  # 0-based index: 0,1,2
-prbs_values = [200, 150, 100,100]
-prbs = prbs_values[scenario]
+# only Scenario 5
+scenario = 4  # 0-based index, so 4 = scenario 5
+prbs_values = [200, 150, 100, 100,100]
+prbs = prbs_values[4]
 
 def movingaverage(values, window):
     weights = np.repeat(1.0, window)/window
@@ -29,8 +27,6 @@ def movingaverage(values, window):
     return sma
 
 # --------------------- plot -------------------------------
-dir_path = f'./results/scenario_{scenario}/'
-
 # subplot
 fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(12, 3.5), constrained_layout=True)
 
@@ -48,8 +44,12 @@ for algo, label in zip(algo_names, labels):
             histories = np.load(os.path.join(path, filename))
             _violations = histories['violation']
             _resources = histories['resources']
-            if len(_violations) < END:
+            
+            # Use all available data or MAX_EPOCHS, whichever is smaller
+            END = min(len(_violations), MAX_EPOCHS)
+            if END <= START:
                 continue
+                
             _violations = _violations[START:END]
             _resources = _resources[START:END]
             runs += 1
@@ -67,20 +67,28 @@ for algo, label in zip(algo_names, labels):
                 if proposal:
                     accuracy = np.vstack((accuracy, movingaverage(np.mean(histories['hits'], axis=0), WINDOW)))
 
-    print(f'Algorithm {algo}')
+    print(f'Algorithm {algo}: {runs} runs found')
     
-    # average over runs
-    actions_mean = np.mean(actions, axis=0)
-    actions_std = np.std(actions, axis=0)
+    if runs == 0:
+        print(f"No data found for {algo}")
+        continue
+        actions_mean = actions
+        actions_std = np.zeros_like(actions)
+        violations_mean = violations
+        violations_std = np.zeros_like(violations)
+        regret_mean = regret
+        regret_std = np.zeros_like(regret)
+    else:
+        actions_mean = np.mean(actions, axis=0)
+        actions_std = np.std(actions, axis=0)
+        violations_mean = np.mean(violations, axis=0)
+        violations_std = np.std(violations, axis=0)
+        regret_mean = np.mean(regret, axis=0)
+        regret_std = np.std(regret, axis=0)
 
-    violations_mean = np.mean(violations, axis=0)
-    violations_std = np.std(violations, axis=0)
-
-    regret_mean = np.mean(regret, axis=0)
-    regret_std = np.std(regret, axis=0)
-
-    # plot results
-    steps = np.arange(len(actions_mean[0:SPAN]))
+    # plot results - calculate span based on actual data length
+    SPAN = len(actions_mean)
+    steps = np.arange(SPAN)
 
     axs[2].set_title('Resource allocation')
     axs[2].plot(steps, actions_mean[0:SPAN])
@@ -106,7 +114,8 @@ for algo, label in zip(algo_names, labels):
                         regret_mean[0:SPAN] + 1.697 * regret_std[0:SPAN] / np.sqrt(runs), color='#DDDDDD')
     axs[1].set_xlabel('stages')
     axs[1].set_ylabel('cumulative SLA violations')
-    axs[1].set_ylim((0,15000))
+    axs[1].set_ylim((0, 15000))
     axs[1].grid()
 
-fig.savefig('./figures/subplots_scenario3_dqn.png', format='png')
+fig.savefig('./figures/subplots_scenario_ppo.png', format='png')
+print("Plot saved to ./figures/subplots_scenario_ppo.png")
