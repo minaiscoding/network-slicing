@@ -14,8 +14,8 @@ TimerWrapper
 """
 
 import numpy as np
-import gymnasium as gym
-from gymnasium import spaces
+import gym
+from gym import spaces
 from itertools import product
 import time
 
@@ -89,6 +89,7 @@ class ReportWrapper(gym.Wrapper):
             if t_action == 0:
                 t_action = 1
             action = np.array([np.floor(self.n_prbs * action[i]/t_action) for i in range(self.n_slices)], dtype=int)
+            # action = np.array([np.floor(self.n_prbs * action[i]/t_action) + 1 for i in range(self.n_slices)], dtype=np.int)
 
         result = self.env.step(action)
     
@@ -113,6 +114,7 @@ class ReportWrapper(gym.Wrapper):
             self.reward_history[self.step_counter] = reward
             self.action_history[self.step_counter] = action.sum()
 
+        # increment counter
         self.step_counter += 1
 
         if self.step_counter % self.control_steps == 0:
