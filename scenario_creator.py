@@ -64,7 +64,8 @@ CBR_description = {
 #    'lambda': 1.0/60.0, # low traffic
     'lambda': 2.0/60.0,
     't_mean': 30.0,
-    'bit_rate': 500000
+    'bit_rate': 500000,
+    'packet_size': 1500  # bytes
 }
 
 VBR_description = {
@@ -73,22 +74,25 @@ VBR_description = {
     't_mean': 30.0,
     'p_size': 1000,
     'b_size': 500,
-    'b_rate': 1
+    'b_rate': 1,
+    'packet_size': 500  # bytes
 }
 
 SLA_embb = {
     'cbr_th': 10e6, 
     'cbr_queue': 10e4, # 5e4
+    'cbr_delay': 10,  # milliseconds
 
     'vbr_th': 15e6, # 10e6 
     'vbr_queue': 15e4,
+    'vbr_delay': 10,  # milliseconds
 
     }
 
 state_variables_embb = ['cbr_traffic','cbr_th', \
-                        'cbr_queue', 'cbr_snr',  \
+                        'cbr_queue', 'cbr_snr', 'cbr_delay', \
                         'vbr_traffic', 'vbr_th', \
-                        'vbr_queue', 'vbr_snr']
+                        'vbr_queue', 'vbr_snr', 'vbr_delay']
 
 # -------------------- mMTC parameters -------------------------
 
@@ -110,7 +114,8 @@ URLLC_CBR_description = {
 #    'lambda': 1.0/60.0, # low traffic
     'lambda': 2.0/60.0,
     't_mean': 30.0,
-    'bit_rate': 500000
+    'bit_rate': 500000,
+    'packet_size': 1500  # bytes
 }
 
 URLLC_VBR_description = {
@@ -119,22 +124,25 @@ URLLC_VBR_description = {
     't_mean': 30.0,
     'p_size': 1000,
     'b_size': 500,
-    'b_rate': 1
+    'b_rate': 1,
+    'packet_size': 500  # bytes
 }
 
 SLA_urllc = {
     'cbr_th': 10e6, 
     'cbr_queue': 5e4, # 5e4
+    'cbr_delay': 5,  # milliseconds - URLLC strict
 
     'vbr_th': 15e6, # 10e6 
     'vbr_queue': 10e4,
+    'vbr_delay': 5,  # milliseconds - URLLC strict
 
 }
 
 state_variables_urllc = ['cbr_traffic','cbr_th', \
-                        'cbr_queue', 'cbr_snr', \
+                        'cbr_queue', 'cbr_snr', 'cbr_delay', \
                         'vbr_traffic', 'vbr_th', \
-                        'vbr_queue', 'vbr_snr',  ]
+                        'vbr_queue', 'vbr_snr', 'vbr_delay']
 
 
 
@@ -159,12 +167,14 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
         'cbr_th': 10e6 * time_per_step,
         'cbr_queue': 10e4 * slots_per_step,
         'cbr_snr': 35 * slots_per_step,
+        'cbr_delay': 20,  # milliseconds
         
    
         'vbr_traffic': 5e6 * time_per_step, 
         'vbr_th': 10e6 * time_per_step, 
         'vbr_queue': 10e4 * slots_per_step, 
         'vbr_snr': 35 * slots_per_step,
+        'vbr_delay': 20,  # milliseconds
         
 
     }
@@ -184,12 +194,14 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
         'cbr_th': 5e6 * time_per_step,
         'cbr_queue': 5e3 * slots_per_step,
         'cbr_snr': 35 * slots_per_step,
+        'cbr_delay': 10,  # milliseconds
         
 
         'vbr_traffic': 2e6 * time_per_step, 
         'vbr_th': 7e6 * time_per_step, 
         'vbr_queue': 5e3 * slots_per_step, 
         'vbr_snr': 35 * slots_per_step,
+        'vbr_delay': 10,  # milliseconds
        
 
     }

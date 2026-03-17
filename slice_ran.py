@@ -31,6 +31,11 @@ class UE:
         self.a = 1 - self.b
         self.queue = 0
         self.slot_length = slot_length
+        
+        # packet delay tracking: list of (bits, arrival_time) tuples
+        self.packet_queue = []
+        self.packet_delays = []  # track delays of delivered packets
+        self.current_time = 0  # in slots
 
         # per subframe variables
         self.snr = 0 # real error values per prb
@@ -47,12 +52,41 @@ class UE:
     def traffic_step(self):
         self.new_bits = self.traffic_source.step()
         self.queue += self.new_bits
+        # add incoming bits as packets with current arrival time
+        if self.new_bits > 0:
+            self.packet_queue.append((self.new_bits, self.current_time))
     
     def transmission_step(self, received):
         if not received:
             self.bits = 0
+        # remove transmitted bits from packet queue and calculate delays
+        
+        print('SliceRAN ID:{}, transmitted bits = {}'.format(self.slice_ran_id, self.bits))
+        bits_to_remove = self.bits
+        while bits_to_remove > 0 and self.packet_queue:
+            pkt_bits, arrival_slot = self.packet_queue[0]
+            if pkt_bits <= bits_to_remove:
+                bits_to_remove -= pkt_bits
+                delay_slots = self.current_time - arrival_slot
+                delay_ms = delay_slots * self.slot_length * 1000
+                self.packet_delays.append(delay_ms)
+                self.packet_queue.pop(0)
+            else:
+                self.packet_queue[0] = (pkt_bits - bits_to_remove, arrival_slot)
+                bits_to_remove = 0
+        
         self.queue = max(self.queue - self.bits, 0)
         self.th = self.a * self.th + self.b * self.bits / self.slot_length
+    
+    def get_mean_delay(self):
+        """Get mean delay of delivered packets in milliseconds"""
+        if not self.packet_delays:
+            return 0
+        return np.mean(self.packet_delays[-50:])  # use last 50 packets for running average
+    
+    def update_time(self):
+        """Increment current time counter"""
+        self.current_time += 1
 
     def __repr__(self):
         return 'UE {}'.format(self.id)
@@ -261,14 +295,19 @@ class SliceRANeMBB:
 
     def slot(self):
         self.slot_counter += 1
+        # update time for all UEs
+        for ue in self.cbr_ues.values():
+            ue.update_time()
+        for ue in self.vbr_ues.values():
+            ue.update_time()
         arrivals = self.cbr_arrivals()
         arrivals.extend(self.vbr_arrivals())
         departures = self.departures()
         return arrivals, departures
 
     def reset_info(self):
-        self.info = {'cbr_traffic': 0, 'cbr_th': 0, 'cbr_queue':0, 'cbr_snr': 0,\
-                    'vbr_traffic': 0, 'vbr_th': 0, 'vbr_queue': 0, 'vbr_snr': 0}
+        self.info = {'cbr_traffic': 0, 'cbr_th': 0, 'cbr_queue':0, 'cbr_snr': 0, 'cbr_delay': 0,\
+                    'vbr_traffic': 0, 'vbr_th': 0, 'vbr_queue': 0, 'vbr_snr': 0, 'vbr_delay': 0}
         self.slot_counter = 0
 
     def reset_state(self):
@@ -277,39 +316,49 @@ class SliceRANeMBB:
     def update_info(self):
         queue = 0
         snr = 0
+        delay = 0
         n = 0
         for ue in self.cbr_ues.values():
             self.info['cbr_traffic'] += ue.new_bits
             self.info['cbr_th'] += ue.bits
             queue += ue.queue
             snr += ue.e_snr
+            delay += ue.get_mean_delay()
             n += 1
         n = max(n,1)
         self.info['cbr_queue'] += queue/n
         self.info['cbr_snr'] += snr/n
+        self.info['cbr_delay'] += delay/n
 
         queue = 0
         snr = 0
+        delay = 0
         n = 0
         for ue in self.vbr_ues.values():
             self.info['vbr_traffic'] += ue.new_bits
             self.info['vbr_th'] += ue.bits
             queue += ue.queue
             snr += ue.e_snr
+            delay += ue.get_mean_delay()
             n += 1
         n = max(n,1)
         self.info['vbr_queue'] += queue/n
         self.info['vbr_snr'] += snr/n
+        self.info['vbr_delay'] += delay/n
 
     def compute_reward(self):
-        '''assesses SLA violations'''
+        '''assesses SLA violations including delay'''
         cbr_th = self.info['cbr_th']/self.observation_time > self.SLA['cbr_th']
         cbr_queue = self.info['cbr_queue']/self.slots_per_step < self.SLA['cbr_queue']
+        cbr_delay = self.info['cbr_delay']/self.slots_per_step < self.SLA['cbr_delay']
+        
         vbr_th = self.info['vbr_th']/self.observation_time > self.SLA['vbr_th']
         vbr_queue = self.info['vbr_queue']/self.slots_per_step < self.SLA['vbr_queue']
-        # the slice has to guarantee the objective delay for cbr and vbr if their traffics do not surpass the maximum
-        cbr_fulfilled = cbr_th or cbr_queue 
-        vbr_fulfilled = vbr_th or vbr_queue
+        vbr_delay = self.info['vbr_delay']/self.slots_per_step < self.SLA['vbr_delay']
+        
+        # the slice has to guarantee throughput and queue objectives, and delay must not exceed threshold
+        cbr_fulfilled = (cbr_th or cbr_queue) and cbr_delay
+        vbr_fulfilled = (vbr_th or vbr_queue) and vbr_delay
         SLA_fulfilled = cbr_fulfilled and vbr_fulfilled
         return not(SLA_fulfilled)
 
