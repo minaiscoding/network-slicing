@@ -457,7 +457,7 @@ class SliceRANeMBB:
         cbr_th    = self.info['cbr_th']    / self.observation_time > self.SLA['cbr_th']
         cbr_queue = self.info['cbr_queue'] / self.slots_per_step   < self.SLA['cbr_queue']
         cbr_delay = self.info['cbr_delay'] / self.slots_per_step   < self.SLA['cbr_delay']
-        print(f"cbr_delay: {self.info['cbr_delay'] / self.slots_per_step}")
+      
         cbr_bler  = self.info['cbr_bler']                          < self.SLA.get('cbr_bler', 1.0)
 
         vbr_th    = self.info['vbr_th']    / self.observation_time > self.SLA['vbr_th']

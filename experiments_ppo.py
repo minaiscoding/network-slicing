@@ -3,28 +3,147 @@
 '''
 @author: juanjosealcaraz
 
-Evaluates PPO in network-slicing scenarios.
+Train and evaluate PPO (OmniSafe) in network-slicing scenarios.
+Each epoch resets the environment with a proper RNG.
 '''
 
 import os
-import concurrent.futures as cf
+import argparse
+import numpy as np
 from numpy.random import default_rng
+from gymnasium import spaces
+from wrapper import ReportWrapper, ENV_ID
+import torch
+from omnisafe.envs.core import CMDP, ClassVar, env_register, env_unregister
+import omnisafe
 from scenario_creator import create_env
-from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3 import PPO
-from wrapper import ReportWrapper
 
 SCENARIO = 4
-RUNS = 5
-PROCESSES = 4 # 30 if enough threads 
-TRAIN_STEPS = 30000
-EVALUATION_STEPS = 5000
-CONTROL_STEPS = 30000
+RUNS = 2
+PROCESSES = 4
+EPOCHS = 10
+STEPS_PER_EPOCH = 1000
+SLOTS_PER_STEP = 500
 PENALTY = 1000
-SLOTS_PER_STEP = 50
-PRBS = [200, 150, 100, 70]
-run_list = list(range(RUNS))
+EVALUATION_STEPS = 5000
 
+ENV_ID = "RanSlicePPO-v0"
+
+_RNG         = np.random.default_rng(3)
+_SCEN        = 4
+_PENALTY     = 100.0
+_TOTAL_STEPS = 20000
+
+@env_register
+@env_unregister
+class RanSliceEnv(CMDP):
+
+    _support_envs: ClassVar[list[str]] = [ENV_ID]
+    need_auto_reset_wrapper  = False
+    need_time_limit_wrapper  = False
+    _num_envs                = 1
+
+    def __init__(self, env_id: str, **kwargs) -> None:
+        super().__init__(env_id)
+        raw_env = create_env(_RNG, _SCEN, penalty=_PENALTY)
+        self._env = ReportWrapper(
+            raw_env,
+            steps=_TOTAL_STEPS,
+            control_steps=500,
+            env_id=1,
+            path='./results/scenario_4/PPOLag/',
+            verbose=False,
+
+        )
+
+        self._max_episode_steps = 500
+        self._n_prbs            = 150
+        self._step_count        = 0  # track steps for forced truncation
+        self._action_space      = spaces.Box(low=0.0, high=1.0, shape=(self._env.n_slices + 1,), dtype=float)
+        self._observation_space = spaces.Box(
+            low=-1, high=1,
+            shape=(self._env.n_variables,), dtype=float
+        )
+
+    def reset(self, seed=None, options=None):
+        self._step_count = 0
+        result = self._env.reset()
+        if isinstance(result, tuple):
+            obs, info = result
+        else:
+            obs, info = result, {}
+        return torch.as_tensor(obs, dtype=torch.float32), info
+
+    def step(self, action: torch.Tensor):
+        act = action.cpu().numpy()
+        act = np.abs(act)
+    
+        # Normalize to sum to 1
+        total = act.sum()
+        if total > 0:
+            act = act / total
+        # Now act sums to exactly 1.0, split into 5 alloc + 1 excess
+        alloc = act[:self._env.n_slices]   # sums to < 1.0
+        excess = act[self._env.n_slices]   # saved budget, added to reward
+
+        alloc_prbs = np.array([int(np.floor(a * self._n_prbs)) for a in alloc], dtype=int)
+        result = self._env.step(alloc_prbs)
+        print(f'Action taken: {alloc_prbs}, Excess bonus: {excess:.4f}')
+
+        if len(result) == 4:
+            obs, reward, done, info = result
+            terminated, truncated = bool(done), False
+        else:
+            obs, reward, terminated, truncated, info = result
+            terminated, truncated = bool(terminated), bool(truncated)
+
+        reward = float(reward) + float(excess)
+        cost = 0.0
+
+        self._step_count += 1
+        if self._step_count >= self._max_episode_steps:
+            truncated = True
+            self._step_count = 0
+
+        if isinstance(info, dict):
+            info = {str(k): v for k, v in info.items()}
+        else:
+            info = {}
+
+        if terminated or truncated:
+            final_obs = torch.as_tensor(obs, dtype=torch.float32)
+            new_obs, _ = self._env.reset()
+            obs = torch.as_tensor(new_obs, dtype=torch.float32)
+            info["final_observation"] = final_obs
+        else:
+            obs = torch.as_tensor(obs, dtype=torch.float32)
+            info["final_observation"] = obs
+
+        return (
+            obs,
+            torch.as_tensor(reward,     dtype=torch.float32),
+            torch.as_tensor(cost,       dtype=torch.float32),
+            torch.as_tensor(terminated, dtype=torch.bool),
+            torch.as_tensor(truncated,  dtype=torch.bool),
+            info,
+        )
+    def render(self, *args, **kwargs):
+        if hasattr(self._env, "render"):
+            return self._env.render()
+        return None
+
+    def set_seed(self, seed: int) -> None:
+        pass
+
+    def spec_log(self, logger) -> None:
+        pass
+
+    def close(self) -> None:
+        self._env.close()
+
+    @property
+    def max_episode_steps(self) -> int:
+        return self._max_episode_steps 
 class Evaluator():
     def __init__(self, scenario=SCENARIO):
         self.scenario = scenario
@@ -32,70 +151,81 @@ class Evaluator():
         self.test_path = f'./results/scenario_{scenario}/PPO_t/'
         os.makedirs(self.train_path, exist_ok=True)
         os.makedirs(self.test_path, exist_ok=True)
-    
+
     def evaluate(self, run_id):
         rng = default_rng(seed=run_id)
+        env = RanSliceEnv(env_id=ENV_ID, rng=rng, scenario=self.scenario, penalty=PENALTY)
 
-        # ----------------- Training -----------------
-        env = create_env(rng, self.scenario, penalty=PENALTY)
+        # ==================== TRAINING ====================
+        print(f'\n=== Training Run {run_id} ===')
+        custom_cfgs = {
+            "train_cfgs": {
+                "total_steps": _TOTAL_STEPS,
+                "device": "cpu",
+            },
+            "algo_cfgs": {
+                "steps_per_epoch": STEPS_PER_EPOCH,
+                "update_iters": 1,
+            },
+            "logger_cfgs": {
+                "use_wandb": False,
+                "save_model_freq": 1,
+            },
+        }
 
-        node_env = ReportWrapper(
-            env,
-            steps=TRAIN_STEPS,
-            control_steps=CONTROL_STEPS,
-            env_id=run_id,
-            path=self.train_path,
-            verbose=False
+        agent = omnisafe.Agent(
+            algo="PPO",
+            env_id=ENV_ID,
+            custom_cfgs=custom_cfgs,
         )
-        print('Wrapped environment created for training')
-        vec_env = make_vec_env(lambda: node_env, n_envs=1)
-        print('Vectorized environment created for training')
 
-        agent = PPO('MlpPolicy', vec_env, verbose=True,device='cpu')
-        agent.learn(total_timesteps=TRAIN_STEPS)
+        print('Training started...')
+        agent.learn()
         print('Training done!')
-        node_env.save_results()
-        print('Training results saved.')
+        agent.plot(smooth=1)
 
-        # ----------------- Evaluation -----------------
-        print('Test starts...')
-        env = create_env(rng, self.scenario, penalty=PENALTY)
-        node_env = ReportWrapper(
-            env,
+        # ==================== EVALUATION ====================
+        print(f'\n=== Evaluation Run {run_id} ===')
+        eval_rng = default_rng(seed=run_id)
+        raw_env = create_env(eval_rng, self.scenario, penalty=PENALTY)
+        eval_env = ReportWrapper(
+            raw_env,
             steps=EVALUATION_STEPS,
-            control_steps=CONTROL_STEPS,
+            control_steps=STEPS_PER_EPOCH,
             env_id=run_id,
             path=self.test_path,
-            verbose=False
+            verbose=False,
         )
-        print('Wrapped environment created for evaluation')
 
-        # Reset returns (obs, info)
-        obs, _ = node_env.reset()
-        state = None
-        for _ in range(EVALUATION_STEPS):
-            # Only pass observation array to predict
-            action, state = agent.predict(obs, state=state, deterministic=True)
-            obs, reward, terminated, truncated, info = node_env.step(action)
+        actor = agent._agent.actor
+        actor.eval()
+
+        obs, _ = eval_env.reset()
+        for step in range(EVALUATION_STEPS):
+            obs_tensor = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+            with torch.no_grad():
+                try:
+                    action_tensor, _, _ = actor.predict(obs_tensor, deterministic=True)
+                except TypeError:
+                    action_tensor, _ = actor.predict(obs_tensor, deterministic=True)
+            action = action_tensor.cpu().numpy().squeeze()
+            obs, reward, terminated, truncated, info = eval_env.step(action)
             if terminated or truncated:
-                obs, _ = node_env.reset()
-                state = None
+                obs, _ = eval_env.reset()
 
-        print('Evaluation done')
-        node_env.save_results()
-        print('Evaluation results saved.')
+        print('Evaluation done!')
+        eval_env.save_results()
+        print(f'Results saved to {self.test_path}')
+        raw_env.close()
 
 
 if __name__=='__main__':
-    evaluator = Evaluator()
-    # ################################################################
-    # # use this code for sequential execution
-   # for run in run_list:
-    #    evaluator.evaluate(run)
-    # ################################################################
+    parser = argparse.ArgumentParser(description="Train PPO on RanSlice with OmniSafe")
+    parser.add_argument("--scenario", type=int, default=SCENARIO)
+    parser.add_argument("--runs", type=int, default=RUNS)
+    args = parser.parse_args()
 
-    # ################################################################
-    # use this code for parallel execution
-    with cf.ProcessPoolExecutor(PROCESSES) as E:
-        list(E.map(evaluator.evaluate, run_list))
-    # ################################################################
+    evaluator = Evaluator(scenario=args.scenario)
+
+    for run in range(args.runs):
+        evaluator.evaluate(run)
