@@ -33,7 +33,7 @@ class UE:
     Tracks HOL delay, HARQ retransmissions, and packet-level BLER.
     '''
     def __init__(self, id, slice_ran_id, traffic_source, type,
-                 window=50, slot_length=1e-3, harq_max_retransmissions=2):
+                 window=50, slot_length=1e-4, harq_max_retransmissions=2):
         self.id = id
         self.slice_ran_id = slice_ran_id
         self.traffic_source = traffic_source
@@ -246,7 +246,7 @@ class SliceRANeMBB:
     def __init__(self, rng, user_counter, id, SLA,
                  CBR_description, VBR_description,
                  state_variables, norm_const, slots_per_step,
-                 slot_length=1e-3, harq_max_retransmissions=9):
+                 slot_length=1e-4, harq_max_retransmissions=9):
         self.type = 'eMBB'
         self.rng = rng
         self.user_counter = user_counter
@@ -488,7 +488,7 @@ class SliceRANURLC(SliceRANeMBB):
     def __init__(self, rng, user_counter, id, SLA,
                  CBR_description, VBR_description,
                  state_variables, norm_const, slots_per_step,
-                 slot_length=1e-3, harq_max_retransmissions=2):
+                 slot_length=1e-4, harq_max_retransmissions=2):
         super().__init__(rng, user_counter, id, SLA,
                          CBR_description, VBR_description,
                          state_variables, norm_const,

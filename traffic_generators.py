@@ -13,7 +13,7 @@ VbrSource
 """
 import numpy as np
 
-SLOT_LENGTH = 1e-3
+SLOT_LENGTH = 1e-4
 
 class PeriodicSource:
     def __init__(self, packet_size = 640, period = 10):

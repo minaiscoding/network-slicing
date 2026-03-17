@@ -6,7 +6,7 @@
 import numpy as np
 
 class NodeB():
-    def __init__(self, slices_l1, slots_per_step, n_prbs, slot_length = 1e-3):
+    def __init__(self, slices_l1, slots_per_step, n_prbs, slot_length = 1e-4):
         self.slices_l1 = slices_l1
         self.n_slices_l1 = len(self.slices_l1)
         self.slots_per_step = slots_per_step

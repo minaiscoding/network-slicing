@@ -85,7 +85,7 @@ SLA_embb = {
 
     'vbr_th': 15e6, # 10e6 
     'vbr_queue': 15e4,
-    'vbr_delay': 10,  # milliseconds
+    'vbr_delay': 100,  #100 slots is 10 ms
 
     }
 
@@ -131,7 +131,7 @@ URLLC_VBR_description = {
 SLA_urllc = {
     'cbr_th': 10e6, 
     'cbr_queue': 5e4, # 5e4
-    'cbr_delay': 5,  # milliseconds - URLLC strict
+    'cbr_delay': 50,  # 50 slots is 5 ms
 
     'vbr_th': 15e6, # 10e6 
     'vbr_queue': 10e4,
@@ -152,7 +152,7 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
     - rng: for random number generation
     - n: selects the scenario (0, 1, 2)
     '''
-    time_per_step = slots_per_step * 1e-3
+    time_per_step = slots_per_step * 1e-4
 
     sc = scenarios[n]
     n_prbs = sc['n_prbs']

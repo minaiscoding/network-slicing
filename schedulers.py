@@ -10,7 +10,7 @@ import numpy as np
 
 '''proportional fair scheduler for average cqi reports'''
 class ProportionalFair:
-    def __init__(self, mcs_codeset, granularity = 2, slot_length = 1e-3, window = 50, sym_per_prb = 158):
+    def __init__(self, mcs_codeset, granularity = 2, slot_length = 1e-4, window = 50, sym_per_prb = 158, reception_prob_boost = 1.0):
         self.granularity = granularity
         self.mcs_codeset = mcs_codeset
         self.b = 1/window
