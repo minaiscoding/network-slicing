@@ -49,7 +49,7 @@ scenario_4 = {
 
 # URLLC scenario - can be used programmatically but not in default scenarios list
 scenario_5 = {
-    'n_prbs': 100,
+    'n_prbs': 150,
     'n_embb': 1,
     'n_mmtc': 1,
     'n_urllc': 1

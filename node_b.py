@@ -77,7 +77,14 @@ class NodeB():
         for _ in range(self.slots_per_step):
             self.slot()
 
-        # get the node state
+        # FIX: compute BLER once per step from packet-level counters
+        # mMTC slices do not have update_bler() so we guard with hasattr
+        for l1 in self.slices_l1:
+            for slice_ran in l1.slices_ran:
+                if hasattr(slice_ran, 'update_bler'):
+                    slice_ran.update_bler()
+
+        # get node state
         state = self.get_state()
 
         # check the SLAs of each slice_l1
