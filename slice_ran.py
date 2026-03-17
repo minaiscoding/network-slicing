@@ -21,7 +21,7 @@ class UE:
     '''
     eMBB UE contains a traffic source that can be CRB (GBR) or VBR (non-GBR)
     '''
-    def __init__(self, id, slice_ran_id, traffic_source, type, window = 50, slot_length = 1e-3):
+    def __init__(self, id, slice_ran_id, traffic_source, type, window = 50, slot_length = 1e-3, harq_max_retransmissions = 3):
         self.id = id
         self.slice_ran_id = slice_ran_id
         self.traffic_source = traffic_source
@@ -32,10 +32,15 @@ class UE:
         self.queue = 0
         self.slot_length = slot_length
         
-        # packet delay tracking: list of (bits, arrival_time) tuples
+        # HARQ parameters
+        self.harq_max_retransmissions = harq_max_retransmissions
+        
+        # packet delay tracking: list of (bits, arrival_time, harq_retransmissions) tuples
         self.packet_queue = []
         self.packet_delays = []  # track delays of delivered packets
         self.current_time = 0  # in slots
+        self.harq_dropped_packets = 0  # count of packets dropped due to HARQ max retransmissions
+        self.harq_total_retransmissions = 0  # total retransmission attempts
 
         # per subframe variables
         self.snr = 0 # real error values per prb
@@ -52,19 +57,43 @@ class UE:
     def traffic_step(self):
         self.new_bits = self.traffic_source.step()
         self.queue += self.new_bits
-        # add incoming bits as packets with current arrival time
+        # add incoming bits as packets with current arrival time and retransmission counter
         if self.new_bits > 0:
-            self.packet_queue.append((self.new_bits, self.current_time))
+            self.packet_queue.append((self.new_bits, self.current_time, 0))  # (bits, arrival_slot, harq_retrans_count)
     
     def transmission_step(self, received):
-        if not received:
-            self.bits = 0
-        # remove transmitted bits from packet queue and calculate delays
+        """
+        Handle transmission step with HARQ retransmission and packet dropping.
         
+        Args:
+            received (bool): Whether the transmission was successfully received
+        """
+        if not received:
+            # HARQ: If transmission failed, increment retransmission counter for first packet
+            if self.packet_queue:
+                pkt_bits, arrival_slot, harq_retrans = self.packet_queue[0]
+                harq_retrans += 1
+                self.harq_total_retransmissions += 1
+                
+                # Check if max retransmissions exceeded
+                if harq_retrans > self.harq_max_retransmissions:
+                    # Drop the packet
+                    self.harq_dropped_packets += 1
+                    self.packet_queue.pop(0)
+                    # Account for dropped packet in queue
+                    self.queue = max(self.queue - pkt_bits, 0)
+                else:
+                    # Keep packet in queue with incremented retransmission counter
+                    self.packet_queue[0] = (pkt_bits, arrival_slot, harq_retrans)
+            
+            # Failed transmission: no bits transmitted
+            self.bits = 0
+        
+        # remove transmitted bits from packet queue and calculate delays
         print('SliceRAN ID:{}, transmitted bits = {}'.format(self.slice_ran_id, self.bits))
         bits_to_remove = self.bits
         while bits_to_remove > 0 and self.packet_queue:
-            pkt_bits, arrival_slot = self.packet_queue[0]
+            pkt_bits, arrival_slot, harq_retrans = self.packet_queue[0]
             if pkt_bits <= bits_to_remove:
                 bits_to_remove -= pkt_bits
                 delay_slots = self.current_time - arrival_slot
@@ -72,7 +101,7 @@ class UE:
                 self.packet_delays.append(delay_ms)
                 self.packet_queue.pop(0)
             else:
-                self.packet_queue[0] = (pkt_bits - bits_to_remove, arrival_slot)
+                self.packet_queue[0] = (pkt_bits - bits_to_remove, arrival_slot, harq_retrans)
                 bits_to_remove = 0
         
         self.queue = max(self.queue - self.bits, 0)
@@ -83,6 +112,28 @@ class UE:
         if not self.packet_delays:
             return 0
         return np.mean(self.packet_delays[-50:])  # use last 50 packets for running average
+    
+    def get_harq_metrics(self):
+        """
+        Get HARQ-related metrics.
+        
+        Returns:
+            dict: Dictionary containing HARQ metrics
+                - dropped_packets: Total packets dropped due to HARQ max retransmissions
+                - total_retransmissions: Total retransmission attempts
+                - queue_packets_with_retrans: Number of packets currently in queue with retransmissions
+        """
+        queue_packets_with_retrans = sum(1 for _, _, retrans in self.packet_queue if retrans > 0)
+        return {
+            'dropped_packets': self.harq_dropped_packets,
+            'total_retransmissions': self.harq_total_retransmissions,
+            'queue_packets_with_retrans': queue_packets_with_retrans
+        }
+    
+    def reset_harq_metrics(self):
+        """Reset HARQ metric counters (useful per step tracking)"""
+        self.harq_dropped_packets = 0
+        self.harq_total_retransmissions = 0
     
     def update_time(self):
         """Increment current time counter"""
@@ -187,8 +238,12 @@ class SliceRANeMBB:
     There are two traffic types: CRB (GBR) and VBR (non-GBR)
     CBR traffic parameters are given in CBR_description
     VBR traffic parameters are given in VBR_description
+    
+    HARQ Configuration:
+    - harq_max_retransmissions: Maximum number of HARQ retransmissions before packet drop
+      Default: 3 (recommended for general eMBB)
     '''
-    def __init__(self, rng, user_counter, id, SLA, CBR_description, VBR_description, state_variables, norm_const, slots_per_step, slot_length = 1e-3):
+    def __init__(self, rng, user_counter, id, SLA, CBR_description, VBR_description, state_variables, norm_const, slots_per_step, slot_length = 1e-3, harq_max_retransmissions=9):
         self.type = 'eMBB'
         self.rng = rng
         self.user_counter = user_counter
@@ -199,6 +254,7 @@ class SliceRANeMBB:
         self.SLA = SLA # service level agreement description
         self.state_variables = state_variables
         self.norm_const = norm_const
+        self.harq_max_retransmissions = harq_max_retransmissions  # HARQ configuration
 
         self.cbr_arrival_rate = CBR_description['lambda']
         self.cbr_mean_time = CBR_description['t_mean']
@@ -246,7 +302,7 @@ class SliceRANeMBB:
                 # generate new user
                 ue_id = next(self.user_counter)
                 cbr_source = CbrSource(bit_rate = self.cbr_bit_rate)
-                ue = UE(ue_id, self.id, cbr_source, CBR)
+                ue = UE(ue_id, self.id, cbr_source, CBR, harq_max_retransmissions=self.harq_max_retransmissions)
                 self.cbr_ues[ue_id] = ue
 
                 # generate holding time
@@ -264,7 +320,7 @@ class SliceRANeMBB:
             # create new vbr user
             ue_id = next(self.user_counter)
             vbr_source = VbrSource(**self.vbr_source_data)
-            ue = UE(ue_id, self.id, vbr_source, VBR)
+            ue = UE(ue_id, self.id, vbr_source, VBR, harq_max_retransmissions=self.harq_max_retransmissions)
             self.vbr_ues[ue_id] = ue
 
             # generate holding time
@@ -306,8 +362,8 @@ class SliceRANeMBB:
         return arrivals, departures
 
     def reset_info(self):
-        self.info = {'cbr_traffic': 0, 'cbr_th': 0, 'cbr_queue':0, 'cbr_snr': 0, 'cbr_delay': 0,\
-                    'vbr_traffic': 0, 'vbr_th': 0, 'vbr_queue': 0, 'vbr_snr': 0, 'vbr_delay': 0}
+        self.info = {'cbr_traffic': 0, 'cbr_th': 0, 'cbr_queue':0, 'cbr_snr': 0, 'cbr_delay': 0, 'cbr_harq_drops': 0, 'cbr_harq_retrans': 0,\
+                    'vbr_traffic': 0, 'vbr_th': 0, 'vbr_queue': 0, 'vbr_snr': 0, 'vbr_delay': 0, 'vbr_harq_drops': 0, 'vbr_harq_retrans': 0}
         self.slot_counter = 0
 
     def reset_state(self):
@@ -317,6 +373,8 @@ class SliceRANeMBB:
         queue = 0
         snr = 0
         delay = 0
+        harq_drops = 0
+        harq_retrans = 0
         n = 0
         for ue in self.cbr_ues.values():
             self.info['cbr_traffic'] += ue.new_bits
@@ -324,15 +382,21 @@ class SliceRANeMBB:
             queue += ue.queue
             snr += ue.e_snr
             delay += ue.get_mean_delay()
+            harq_drops += ue.harq_dropped_packets
+            harq_retrans += ue.harq_total_retransmissions
             n += 1
         n = max(n,1)
         self.info['cbr_queue'] += queue/n
         self.info['cbr_snr'] += snr/n
         self.info['cbr_delay'] += delay/n
+        self.info['cbr_harq_drops'] += harq_drops
+        self.info['cbr_harq_retrans'] += harq_retrans
 
         queue = 0
         snr = 0
         delay = 0
+        harq_drops = 0
+        harq_retrans = 0
         n = 0
         for ue in self.vbr_ues.values():
             self.info['vbr_traffic'] += ue.new_bits
@@ -340,11 +404,15 @@ class SliceRANeMBB:
             queue += ue.queue
             snr += ue.e_snr
             delay += ue.get_mean_delay()
+            harq_drops += ue.harq_dropped_packets
+            harq_retrans += ue.harq_total_retransmissions
             n += 1
         n = max(n,1)
         self.info['vbr_queue'] += queue/n
         self.info['vbr_snr'] += snr/n
         self.info['vbr_delay'] += delay/n
+        self.info['vbr_harq_drops'] += harq_drops
+        self.info['vbr_harq_retrans'] += harq_retrans
 
     def compute_reward(self):
         '''assesses SLA violations including delay'''
@@ -373,8 +441,12 @@ class SliceRANURLC(SliceRANeMBB):
     '''
     Ultra-Reliable Low-Latency Communications (URLLC) slice.
     Extends eMBB with tighter SLAs and different traffic parameters.
+    
+    HARQ Configuration:
+    - harq_max_retransmissions: Maximum number of HARQ retransmissions before packet drop
+      Default: 2 (stricter than eMBB's 3 for lower latency)
     '''
-    def __init__(self, rng, user_counter, id, SLA, CBR_description, VBR_description, state_variables, norm_const, slots_per_step, slot_length = 1e-3):
-        super().__init__(rng, user_counter, id, SLA, CBR_description, VBR_description, state_variables, norm_const, slots_per_step, slot_length)
+    def __init__(self, rng, user_counter, id, SLA, CBR_description, VBR_description, state_variables, norm_const, slots_per_step, slot_length = 1e-3, harq_max_retransmissions=4):
+        super().__init__(rng, user_counter, id, SLA, CBR_description, VBR_description, state_variables, norm_const, slots_per_step, slot_length, harq_max_retransmissions)
         self.type = 'URLLC'
 
