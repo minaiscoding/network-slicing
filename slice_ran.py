@@ -90,7 +90,7 @@ class UE:
             self.bits = 0
         
         # remove transmitted bits from packet queue and calculate delays
-        print('SliceRAN ID:{}, transmitted bits = {}'.format(self.slice_ran_id, self.bits))
+
         bits_to_remove = self.bits
         while bits_to_remove > 0 and self.packet_queue:
             pkt_bits, arrival_slot, harq_retrans = self.packet_queue[0]
@@ -425,8 +425,8 @@ class SliceRANeMBB:
         vbr_delay = self.info['vbr_delay']/self.slots_per_step < self.SLA['vbr_delay']
         
         # the slice has to guarantee throughput and queue objectives, and delay must not exceed threshold
-        cbr_fulfilled = (cbr_th or cbr_queue) and cbr_delay
-        vbr_fulfilled = (vbr_th or vbr_queue) and vbr_delay
+        cbr_fulfilled = cbr_th  or cbr_delay
+        vbr_fulfilled = vbr_th  or vbr_delay
         SLA_fulfilled = cbr_fulfilled and vbr_fulfilled
         return not(SLA_fulfilled)
 
