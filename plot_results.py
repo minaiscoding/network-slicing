@@ -1,69 +1,82 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Plot PPO results with moving average
+Plot PPO results for low / medium / congested scenarios on the same axes.
 """
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-# training results
-WINDOW = 400
-START = 0
-MAX_EPOCHS = 30000  # maximum epochs to display (will use all available if less)
-INPUT_FILE = './results/scenario_4/PPO/history_1.npz'
-OUTPUT_FILE = './figures/subplots_scenario_ppo.png'
+WINDOW    = 400
+START     = 0
+MAX_STEPS = 30000
+PRBS_MAX  = 150
 
-PRBS_MAX = 100
+OUTPUT_FILE = './figures/subplots_scenario_comparison.png'
+
+SCENARIOS = {
+    'low':       ('results/low/PPOLag_eval/history_1.npz',       '#2196F3'),
+    'medium':    ('results/medium/PPOLag_eval/history_1.npz',    '#FF9800'),
+    'congested': ('results/congested/PPOLag_eval/history_1.npz', '#F44336'),
+}
 
 def movingaverage(values, window):
     weights = np.repeat(1.0, window) / window
-    sma = np.convolve(values, weights, 'valid')
-    return sma
+    return np.convolve(values, weights, 'valid')
 
 if __name__ == '__main__':
-    if not INPUT_FILE.endswith('.npz'):
-        raise ValueError('INPUT_FILE must point to a .npz file')
+    os.makedirs('./figures', exist_ok=True)
 
-    histories = np.load(INPUT_FILE)
-    violations = histories['violation']
-    resources = histories['resources']
+    fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(14, 4), constrained_layout=True)
 
-    end = min(len(violations), MAX_EPOCHS)
-    if end <= START:
-        raise RuntimeError('No data available in the selected START/MAX_EPOCHS range.')
+    for name, (path, color) in SCENARIOS.items():
+        if not os.path.isfile(path):
+            print(f'Skipping {name}: file not found ({path})')
+            continue
 
-    violations = violations[START:end]
-    resources = resources[START:end]
+        histories  = np.load(path)
+        violations = histories['violation']
+        resources  = histories['resources']
 
-    effective_window = min(WINDOW, len(violations))
-    violations_ma = movingaverage(violations, effective_window)
-    regret_ma = movingaverage(violations.cumsum(), effective_window)
-    resources_ma = movingaverage(resources, effective_window)
+        end = min(len(violations), MAX_STEPS)
+        violations = violations[START:end]
+        resources  = resources[START:end]
 
-    steps = np.arange(len(violations_ma))
+        window = min(WINDOW, len(violations))
 
-    fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(12, 3.5), constrained_layout=True)
+        # moving average trims (window-1) samples from the front —
+        # align x so step 0 is always the first real step
+        violations_ma = movingaverage(violations, window)
+        resources_ma  = movingaverage(resources,  window)
+        ma_offset = window - 1          # how many steps were consumed
+        steps_ma  = np.arange(ma_offset, ma_offset + len(violations_ma))
 
-    axs[2].set_title('Resource allocation')
-    axs[2].plot(steps, resources_ma)
-    axs[2].set_ylim((0, PRBS_MAX))
-    axs[2].set_xlabel('stages')
-    axs[2].set_ylabel('PRBs')
-    axs[2].grid()
+        # cumulative is plotted raw — no smoothing, starts at 0
+        steps_raw = np.arange(len(violations))
+        cumulative = violations.cumsum()
 
-    axs[0].set_title('SLA violations')
-    axs[0].plot(steps, violations_ma, label='PPO history_1')
-    axs[0].set_xlabel('stages')
-    axs[0].set_ylabel('SLA violations')
-    axs[0].legend(loc='best')
-    axs[0].grid()
+        axs[0].plot(steps_ma,  violations_ma, color=color, linewidth=1.2, label=name)
+        axs[1].plot(steps_raw, cumulative,    color=color, linewidth=1.2, label=name)
+        axs[2].plot(steps_ma,  resources_ma,  color=color, linewidth=1.2, label=name)
+
+    axs[0].set_title('SLA violations (moving avg)')
+    axs[0].set_xlabel('step')
+    axs[0].set_ylabel('mean violations per step')
+    axs[0].legend(loc='best', fontsize=9)
+    axs[0].grid(alpha=0.3)
 
     axs[1].set_title('Cumulative SLA violations')
-    axs[1].plot(steps, regret_ma, label='PPO history_1')
-    axs[1].set_xlabel('stages')
-    axs[1].set_ylabel('cumulative SLA violations')
-    axs[1].grid()
+    axs[1].set_xlabel('step')
+    axs[1].set_ylabel('cumulative violations')
+    axs[1].legend(loc='best', fontsize=9)
+    axs[1].grid(alpha=0.3)
 
-    fig.savefig(OUTPUT_FILE, format='png')
-    print(f'Loaded: {INPUT_FILE}')
+    axs[2].set_title('Resource allocation (moving avg)')
+    axs[2].set_xlabel('step')
+    axs[2].set_ylabel('PRBs')
+    axs[2].set_ylim((0, PRBS_MAX))
+    axs[2].legend(loc='best', fontsize=9)
+    axs[2].grid(alpha=0.3)
+
+    fig.savefig(OUTPUT_FILE, format='png', dpi=150)
     print(f'Plot saved to {OUTPUT_FILE}')

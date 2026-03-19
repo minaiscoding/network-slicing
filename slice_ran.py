@@ -110,21 +110,12 @@ class UE:
         self.th = self.a * self.th + self.b * self.bits / self.slot_length
 
     def get_hol_delay(self):
-        """
-        Age of the oldest packet currently in the queue in slots.
-        Returns 0 if queue is empty.
-        Resets naturally when the HOL packet is delivered or dropped.
-        """
         if not self.packet_queue:
             return 0
         _, arrival_slot, _ = self.packet_queue[0]
         return self.current_time - arrival_slot
 
     def get_bler(self):
-        """
-        Packet-level BLER = dropped / (dropped + delivered).
-        Always in [0, 1]. Returns 0 if no packets completed this step.
-        """
         total = self.packets_dropped + self.packets_delivered
         if total == 0:
             return 0.0
@@ -294,6 +285,9 @@ class SliceRANeMBB:
         return True
 
     def cbr_arrivals(self):
+        # --- FIX: skip entirely if CBR traffic is disabled (lambda = 0) ---
+        if self.cbr_arrival_rate <= 0:
+            return []
         if self.cbr_steps_next_arrival == 0:
             inter_arrival_time = self.rng.exponential(
                 1.0 / self.cbr_arrival_rate)
@@ -315,6 +309,9 @@ class SliceRANeMBB:
         return []
 
     def vbr_arrivals(self):
+        # --- FIX: skip entirely if VBR traffic is disabled (lambda = 0) ---
+        if self.vbr_arrival_rate <= 0:
+            return []
         if self.vbr_steps_next_arrival == 0:
             ue_id = next(self.user_counter)
             vbr_source = VbrSource(**self.vbr_source_data)
@@ -379,7 +376,6 @@ class SliceRANeMBB:
         self.state = np.full((len(self.state_variables)), 0, dtype=float)
 
     def update_info(self):
-        
         """
         eMBB delay: accumulates per-slot average HOL delay across UEs.
         info['cbr_delay'] / slots_per_step = time-averaged mean HOL delay.
@@ -403,7 +399,7 @@ class SliceRANeMBB:
         n = max(n, 1)
         self.info['cbr_queue']        += queue / n
         self.info['cbr_snr']          += snr   / n
-        self.info['cbr_delay']        += delay / n   # sum of per-slot avg
+        self.info['cbr_delay']        += delay / n
         self.info['cbr_harq_drops']   += harq_drops
         self.info['cbr_harq_retrans'] += harq_retrans
 
@@ -426,13 +422,11 @@ class SliceRANeMBB:
         n = max(n, 1)
         self.info['vbr_queue']        += queue / n
         self.info['vbr_snr']          += snr   / n
-        self.info['vbr_delay']        += delay / n   # sum of per-slot avg
+        self.info['vbr_delay']        += delay / n
         self.info['vbr_harq_drops']   += harq_drops
-        
         self.info['vbr_harq_retrans'] += harq_retrans
 
     def update_bler(self):
-  
         """
         BLER computed once per step after slot loop.
         Called from NodeB.step(). Always in [0, 1].
@@ -450,10 +444,6 @@ class SliceRANeMBB:
             vbr_bler += ue.get_bler()
             n += 1
         self.info['vbr_bler'] = vbr_bler / max(n, 1)
-        print('bler debug: cbr_bler={:.3f} ({} packets), vbr_bler={:.3f} ({} packets)'.format(
-            self.info['cbr_bler'], self.info['cbr_harq_drops'], self.info['vbr_bler'], self.info['vbr_harq_drops']
-        ))
-
 
     def compute_reward(self):
         """
@@ -463,7 +453,6 @@ class SliceRANeMBB:
         cbr_th    = self.info['cbr_th']    / self.observation_time > self.SLA['cbr_th']
         cbr_queue = self.info['cbr_queue'] / self.slots_per_step   < self.SLA['cbr_queue']
         cbr_delay = self.info['cbr_delay'] / self.slots_per_step   < self.SLA['cbr_delay']
-      
         cbr_bler  = self.info['cbr_bler']                          < self.SLA.get('cbr_bler', 1.0)
 
         vbr_th    = self.info['vbr_th']    / self.observation_time > self.SLA['vbr_th']
@@ -471,8 +460,8 @@ class SliceRANeMBB:
         vbr_delay = self.info['vbr_delay'] / self.slots_per_step   < self.SLA['vbr_delay']
         vbr_bler  = self.info['vbr_bler']                          < self.SLA.get('vbr_bler', 1.0)
 
-        cbr_fulfilled = (cbr_th or cbr_queue) and cbr_delay and cbr_bler
-        vbr_fulfilled = (vbr_th or vbr_queue) and vbr_delay and vbr_bler
+        cbr_fulfilled = cbr_th or (cbr_queue and cbr_delay)
+        vbr_fulfilled = vbr_th or (vbr_queue and vbr_delay)
 
         return not (cbr_fulfilled and vbr_fulfilled)
 
@@ -489,8 +478,6 @@ class SliceRANURLC(SliceRANeMBB):
     Delay metric: maximum HOL delay reached by any UE at any slot
     during the step. Compared directly against SLA['cbr_delay'] in
     compute_reward() — no division by slots_per_step.
-
-    This reflects worst-case latency which is what URLLC SLAs care about.
     '''
     def __init__(self, rng, user_counter, id, SLA,
                  CBR_description, VBR_description,
@@ -504,11 +491,9 @@ class SliceRANURLC(SliceRANeMBB):
         self.type = 'URLLC'
 
     def update_info(self):
-        
         """
         URLLC delay: maximum HOL delay across all UEs at this slot.
         info['cbr_delay'] = max HOL reached at any slot during the step.
-        Uses = max(...) not += so it tracks the peak, not the sum.
         """
         # --- CBR ---
         max_hol      = 0
@@ -529,7 +514,7 @@ class SliceRANURLC(SliceRANeMBB):
         n = max(n, 1)
         self.info['cbr_queue']        += queue / n
         self.info['cbr_snr']          += snr   / n
-        self.info['cbr_delay']         = max(self.info['cbr_delay'], max_hol)  # peak, not sum
+        self.info['cbr_delay']         = max(self.info['cbr_delay'], max_hol)
         self.info['cbr_harq_drops']   += harq_drops
         self.info['cbr_harq_retrans'] += harq_retrans
 
@@ -552,7 +537,7 @@ class SliceRANURLC(SliceRANeMBB):
         n = max(n, 1)
         self.info['vbr_queue']        += queue / n
         self.info['vbr_snr']          += snr   / n
-        self.info['vbr_delay']         = max(self.info['vbr_delay'], max_hol)  # peak, not sum
+        self.info['vbr_delay']         = max(self.info['vbr_delay'], max_hol)
         self.info['vbr_harq_drops']   += harq_drops
         self.info['vbr_harq_retrans'] += harq_retrans
 
@@ -561,20 +546,18 @@ class SliceRANURLC(SliceRANeMBB):
         URLLC SLA check.
         cbr_delay: max HOL reached during the step — compare directly,
         no division by slots_per_step.
-        SLA['cbr_delay'] should be set in raw slots in system_config.py
-        e.g. 10 slots = 10 ms worst-case HOL budget.
         """
         cbr_th    = self.info['cbr_th']    / self.observation_time > self.SLA['cbr_th']
         cbr_queue = self.info['cbr_queue'] / self.slots_per_step   < self.SLA['cbr_queue']
-        cbr_delay = self.info['cbr_delay']                         < self.SLA['cbr_delay']  # no division
+        cbr_delay = self.info['cbr_delay']                         < self.SLA['cbr_delay']
         cbr_bler  = self.info['cbr_bler']                          < self.SLA.get('cbr_bler', 1.0)
 
         vbr_th    = self.info['vbr_th']    / self.observation_time > self.SLA['vbr_th']
         vbr_queue = self.info['vbr_queue'] / self.slots_per_step   < self.SLA['vbr_queue']
-        vbr_delay = self.info['vbr_delay']                         < self.SLA['vbr_delay']  # no division
+        vbr_delay = self.info['vbr_delay']                         < self.SLA['vbr_delay']
         vbr_bler  = self.info['vbr_bler']                          < self.SLA.get('vbr_bler', 1.0)
 
-        cbr_fulfilled = (cbr_th or cbr_queue) and cbr_delay and cbr_bler
-        vbr_fulfilled = (vbr_th or vbr_queue) and vbr_delay and vbr_bler
+        cbr_fulfilled = cbr_th or (cbr_queue and cbr_delay and cbr_bler)
+        vbr_fulfilled = vbr_th or (vbr_queue and vbr_delay and vbr_bler)
 
         return not (cbr_fulfilled and vbr_fulfilled)

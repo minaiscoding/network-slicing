@@ -1,0 +1,251 @@
+# =============================================================================
+# scenarios.yaml
+#
+# Three load levels: low, medium, congested.
+# Each scenario has exactly one slice per type: 1 eMBB, 1 mMTC, 1 URLLC.
+# Load is varied by changing UE arrival rates, connection times, bit-rates,
+# and number of IoT devices — not by adding more slices.
+#
+# --- TRAFFIC PARAMETER REFERENCE ---
+#
+# eMBB / URLLC slices carry two flow types: CBR (constant bit-rate, GBR
+# UEs) and VBR (variable bit-rate, non-GBR UEs). Omit a flow block
+# entirely to disable that flow type for the slice (its arrival rate is
+# set to 0 so no UEs of that type are ever generated).
+#
+#   cbr / urllc-cbr:
+#     lambda      : mean UE arrival rate [UEs / second].
+#                   Inter-arrival times are exponentially distributed with
+#                   mean 1/lambda. E.g. lambda: 0.0333 ≈ 2 UEs/min.
+#     t_mean      : mean UE connection time [seconds]. Each UE stays
+#                   connected for Exp(t_mean) seconds before departing.
+#     bit_rate    : constant payload bit-rate of the CBR source [bps].
+#                   Drives queue build-up and throughput SLA checks.
+#     packet_size : CBR packet size [bytes]. Used by the traffic generator
+#                   to produce fixed-size bursts at the given bit_rate.
+#
+#   vbr / urllc-vbr:
+#     lambda      : mean UE arrival rate [UEs / second] (same as CBR).
+#     t_mean      : mean UE connection time [seconds] (same as CBR).
+#     p_size      : VBR packet payload size [bytes].
+#     b_size      : burst size [bytes] — amount of data sent per burst event.
+#     b_rate      : burst rate [bursts / slot] — controls how often a burst
+#                   is emitted. Together with b_size this sets the average
+#                   VBR throughput: b_size * b_rate / slot_length [bps].
+#     packet_size : packet size [bytes] seen by the queue model.
+#
+#   mmtc:
+#     n_devices       : total number of MTC devices in the cell.
+#     repetition_set  : list of allowed NB-IoT repetition counts. Each
+#                       device is assigned one value at random at reset.
+#                       Higher repetitions → better coverage, longer TX.
+#     period_set      : list of allowed message periods [slots]. Each
+#                       device fires one message every Uniform(period_set)
+#                       slots. 1000 slots = 100 ms; 100000 slots = 10 s.
+#
+# --- SLA PARAMETER REFERENCE ---
+#
+#   eMBB SLA (checked at the end of each RL step):
+#     cbr_th    : minimum acceptable CBR throughput [bps]. SLA is met if
+#                 either cbr_th or cbr_queue passes (OR gate with queue).
+#     cbr_queue : maximum acceptable mean CBR queue occupancy [bits].
+#     cbr_delay : maximum acceptable mean CBR HOL delay [ms].
+#     vbr_th    : minimum acceptable VBR throughput [bps].
+#     vbr_queue : maximum acceptable mean VBR queue occupancy [bits].
+#     vbr_delay : maximum acceptable mean VBR HOL delay [slots;
+#                 100 slots = 10 ms].
+#
+#   URLLC SLA (stricter; delay is worst-case peak, not mean):
+#     cbr_th    : minimum acceptable CBR throughput [bps].
+#     cbr_queue : maximum acceptable CBR queue [bits].
+#     cbr_delay : maximum acceptable peak CBR HOL delay [slots].
+#                 Compared directly (no averaging) — worst-case latency.
+#     vbr_th / vbr_queue / vbr_delay : same semantics as CBR above.
+#
+#   mMTC SLA:
+#     delay     : maximum acceptable mean device access delay [slots].
+#                 300 slots = 30 ms at slot_length = 1e-4 s.
+#
+# NOTE: use plain decimal notation for floats (e.g. 10000000.0 not 10.0e6)
+# because yaml.safe_load parses scientific notation as strings.
+#
+# =============================================================================
+
+scenarios:
+
+  # ---------------------------------------------------------------------------
+  - name: low                # light load — few UEs, sparse IoT traffic
+    n_prbs: 100
+    slices:
+
+      embb:
+        count: 1
+        cbr:
+          lambda: 0.01    # ~1 CBR UE arrives per minute
+          t_mean: 20.0       # each UE stays ~20 s on average
+          bit_rate: 300000   # 300 kbps — low-rate stream
+          packet_size: 1500
+        vbr:
+          lambda: 0.02   # ~2 VBR UEs arrive per minute
+          t_mean: 20.0
+          p_size: 500
+          b_size: 250        # small bursts
+          b_rate: 1
+          packet_size: 500
+        sla:
+          cbr_th: 10000000.0    # 10 Mbps throughput floor
+          cbr_queue: 100000.0   # 100 kbits max mean queue
+          cbr_delay: 10.0       # 10 ms mean HOL delay limit
+          vbr_th: 15000000.0
+          vbr_queue: 150000.0
+          vbr_delay: 500.0      # 100 slots = 10 ms
+
+      mmtc:
+        count: 1
+        n_devices: 300         # small IoT deployment
+        repetition_set: [2, 4, 8]
+        period_set: [20000, 50000, 100000]  # devices message every 2–10 s
+        sla:
+          delay: 300.0          # max mean device access delay [slots]
+
+      urllc:
+        count: 1
+        cbr:
+          lambda: 0.0167     # ~1 URLLC CBR UE per minute
+          t_mean: 20.0
+          bit_rate: 300000
+          packet_size: 1500
+        vbr:
+          lambda: 0.0333     # ~2 URLLC VBR UEs per minute
+          t_mean: 20.0
+          p_size: 500
+          b_size: 250
+          b_rate: 1
+          packet_size: 500
+        sla:
+          cbr_th: 10000000.0
+          cbr_queue: 50000.0
+          cbr_delay: 50.0       # 50 slots = 5 ms worst-case HOL
+          vbr_th: 15000000.0
+          vbr_queue: 100000.0
+          vbr_delay: 50.0        # 5 ms strict latency
+
+  # ---------------------------------------------------------------------------
+  - name: medium             # moderate load — standard UE population
+    n_prbs: 100
+    slices:
+
+      embb:
+        count: 1
+        cbr:
+          lambda: 0.0333     # ~2 CBR UEs arrive per minute
+          t_mean: 30.0       # each UE stays ~30 s on average
+          bit_rate: 500000   # 500 kbps — standard stream
+          packet_size: 1500
+        vbr:
+          lambda: 0.0833     # ~5 VBR UEs arrive per minute
+          t_mean: 30.0
+          p_size: 1000
+          b_size: 500
+          b_rate: 1
+          packet_size: 500
+        sla:
+          cbr_th: 10000000.0
+          cbr_queue: 100000.0
+          cbr_delay: 10.0
+          vbr_th: 15000000.0
+          vbr_queue: 150000.0
+          vbr_delay: 100.0
+
+      mmtc:
+        count: 1
+        n_devices: 1000         # medium IoT deployment
+        repetition_set: [2, 4, 8, 16, 32, 64, 128]
+        period_set: [1000, 5000, 10000, 15000, 20000, 25000, 50000, 100000]
+        sla:
+          delay: 300.0
+
+      urllc:
+        count: 1
+        cbr:
+          lambda: 0.0333     # ~2 URLLC CBR UEs per minute
+          t_mean: 30.0
+          bit_rate: 500000
+          packet_size: 1500
+        vbr:
+          lambda: 0.0833     # ~5 URLLC VBR UEs per minute
+          t_mean: 30.0
+          p_size: 1000
+          b_size: 500
+          b_rate: 1
+          packet_size: 500
+        sla:
+          cbr_th: 10000000.0
+          cbr_queue: 50000.0
+          cbr_delay: 50.0
+          vbr_th: 15000000.0
+          vbr_queue: 100000.0
+          vbr_delay: 5.0
+
+  # ---------------------------------------------------------------------------
+  - name: congested          # heavy load — high UE density, queues under stress
+    n_prbs: 150
+    slices:
+
+      embb:
+        count: 1
+        cbr:
+          lambda: 0.0667     # ~4 CBR UEs arrive per minute
+          t_mean: 60.0       # UEs stay longer — more simultaneous active UEs
+          bit_rate: 800000   # 800 kbps — high-rate stream
+          packet_size: 1500
+        vbr:
+          lambda: 0.1667     # ~10 VBR UEs arrive per minute
+          t_mean: 60.0
+          p_size: 1000
+          b_size: 1000       # larger bursts
+          b_rate: 2          # 2 bursts per slot — higher instantaneous load
+          packet_size: 500
+        sla:
+          cbr_th: 10000000.0
+          cbr_queue: 100000.0
+          cbr_delay: 10.0
+          vbr_th: 15000000.0
+          vbr_queue: 150000.0
+          vbr_delay: 100.0
+
+      mmtc:
+        count: 1
+        n_devices: 2000         # large IoT deployment, frequent channel contention
+        repetition_set: [2, 4, 8, 16, 32, 64, 128]
+        period_set: [1000, 5000, 10000, 15000, 20000, 25000, 50000, 100000]
+        sla:
+          delay: 300.0
+
+      urllc:
+        count: 1
+        cbr:
+          lambda: 0.0667     # ~4 URLLC CBR UEs per minute
+          t_mean: 60.0
+          bit_rate: 800000
+          packet_size: 1500
+        vbr:
+          lambda: 0.1667     # ~10 URLLC VBR UEs per minute
+          t_mean: 60.0
+          p_size: 1000
+          b_size: 1000
+          b_rate: 2
+          packet_size: 500
+        sla:
+          cbr_th: 10000000.0
+          cbr_queue: 50000.0
+          cbr_delay: 50.0
+          vbr_th: 15000000.0
+          vbr_queue: 100000.0
+          vbr_delay: 50.0
+
+  # ---------------------------------------------------------------------------
+  # Add your own scenarios below following the same structure.
+  # Every scenario must have embb, mmtc, and urllc blocks (use count: 0
+  # to disable a type). All traffic and sla keys are optional — omitted
+  # keys fall back to the defaults in system_config.py.
