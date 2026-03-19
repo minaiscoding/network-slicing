@@ -428,6 +428,7 @@ class SliceRANeMBB:
         self.info['vbr_snr']          += snr   / n
         self.info['vbr_delay']        += delay / n   # sum of per-slot avg
         self.info['vbr_harq_drops']   += harq_drops
+        
         self.info['vbr_harq_retrans'] += harq_retrans
 
     def update_bler(self):
@@ -467,6 +468,10 @@ class SliceRANeMBB:
 
         cbr_fulfilled = (cbr_th or cbr_queue) and cbr_delay and cbr_bler
         vbr_fulfilled = (vbr_th or vbr_queue) and vbr_delay and vbr_bler
+        print('bler debug: cbr_bler={:.3f} ({} packets), vbr_bler={:.3f} ({} packets)'.format(
+            self.info['cbr_bler'], self.info['cbr_harq_drops'],
+            self.info['vbr_bler'], self.info['vbr_harq_drops']
+        ))
         return not (cbr_fulfilled and vbr_fulfilled)
 
     def get_state(self):
@@ -569,4 +574,8 @@ class SliceRANURLC(SliceRANeMBB):
 
         cbr_fulfilled = (cbr_th or cbr_queue) and cbr_delay and cbr_bler
         vbr_fulfilled = (vbr_th or vbr_queue) and vbr_delay and vbr_bler
+        print('bler debug urllc: cbr_bler={:.3f} ({} packets), vbr_bler={:.3f} ({} packets)'.format(
+            self.info['cbr_bler'], self.info['cbr_harq_drops'],
+            self.info['vbr_bler'], self.info['vbr_harq_drops']
+        ))
         return not (cbr_fulfilled and vbr_fulfilled)

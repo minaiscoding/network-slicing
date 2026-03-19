@@ -5,117 +5,65 @@ Plot PPO results with moving average
 """
 import numpy as np
 import matplotlib.pyplot as plt
-import os
 
 # training results
 WINDOW = 400
 START = 0
 MAX_EPOCHS = 30000  # maximum epochs to display (will use all available if less)
+INPUT_FILE = './results/scenario_4/PPO/history_1.npz'
+OUTPUT_FILE = './figures/subplots_scenario_ppo.png'
 
-# only PPO
-algo_names = ['PPO']
-labels = ['PPO']
-
-# only Scenario 5
-scenario = 4  # 0-based index, so 4 = scenario 5
-prbs_values = [200, 150, 100, 100,100]
-prbs = prbs_values[4]
+PRBS_MAX = 100
 
 def movingaverage(values, window):
-    weights = np.repeat(1.0, window)/window
+    weights = np.repeat(1.0, window) / window
     sma = np.convolve(values, weights, 'valid')
     return sma
 
-# --------------------- plot -------------------------------
-# subplot
-fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(12, 3.5), constrained_layout=True)
+if __name__ == '__main__':
+    if not INPUT_FILE.endswith('.npz'):
+        raise ValueError('INPUT_FILE must point to a .npz file')
 
-for algo, label in zip(algo_names, labels):
-    violations = np.empty([1])
-    actions = np.empty([1])
-    regret = np.empty([1])
-    data = False
-    proposal = False
-    path = f'./results/scenario_{scenario}/{algo}/'
-    runs = 0
+    histories = np.load(INPUT_FILE)
+    violations = histories['violation']
+    resources = histories['resources']
 
-    for filename in os.listdir(path):
-        if filename.endswith(".npz"):
-            histories = np.load(os.path.join(path, filename))
-            _violations = histories['violation']
-            _resources = histories['resources']
-            
-            # Use all available data or MAX_EPOCHS, whichever is smaller
-            END = min(len(_violations), MAX_EPOCHS)
-            if END <= START:
-                continue
-                
-            _violations = _violations[START:END]
-            _resources = _resources[START:END]
-            runs += 1
-            if not data:
-                violations = movingaverage(_violations, WINDOW)
-                regret = movingaverage(_violations.cumsum(), WINDOW)
-                actions = movingaverage(_resources, WINDOW)
-                if proposal:
-                    accuracy = movingaverage(np.mean(histories['hits'], axis=0), WINDOW)
-                data = True
-            else:
-                violations = np.vstack((violations, movingaverage(_violations, WINDOW)))
-                regret = np.vstack((regret, movingaverage(_violations.cumsum(), WINDOW)))
-                actions = np.vstack((actions, movingaverage(_resources, WINDOW)))
-                if proposal:
-                    accuracy = np.vstack((accuracy, movingaverage(np.mean(histories['hits'], axis=0), WINDOW)))
+    end = min(len(violations), MAX_EPOCHS)
+    if end <= START:
+        raise RuntimeError('No data available in the selected START/MAX_EPOCHS range.')
 
-    print(f'Algorithm {algo}: {runs} runs found')
-    
-    if runs == 0:
-        print(f"No data found for {algo}")
-        continue
-        actions_mean = actions
-        actions_std = np.zeros_like(actions)
-        violations_mean = violations
-        violations_std = np.zeros_like(violations)
-        regret_mean = regret
-        regret_std = np.zeros_like(regret)
-    else:
-        actions_mean = np.mean(actions, axis=0)
-        actions_std = np.std(actions, axis=0)
-        violations_mean = np.mean(violations, axis=0)
-        violations_std = np.std(violations, axis=0)
-        regret_mean = np.mean(regret, axis=0)
-        regret_std = np.std(regret, axis=0)
+    violations = violations[START:end]
+    resources = resources[START:end]
 
-    # plot results - calculate span based on actual data length
-    SPAN = len(actions_mean)
-    steps = np.arange(SPAN)
+    effective_window = min(WINDOW, len(violations))
+    violations_ma = movingaverage(violations, effective_window)
+    regret_ma = movingaverage(violations.cumsum(), effective_window)
+    resources_ma = movingaverage(resources, effective_window)
+
+    steps = np.arange(len(violations_ma))
+
+    fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(12, 3.5), constrained_layout=True)
 
     axs[2].set_title('Resource allocation')
-    axs[2].plot(steps, actions_mean[0:SPAN])
-    axs[2].fill_between(steps, actions_mean[0:SPAN] - 1.697 * actions_std[0:SPAN] / np.sqrt(runs),
-                        actions_mean[0:SPAN] + 1.697 * actions_std[0:SPAN] / np.sqrt(runs), color='#DDDDDD')
-    axs[2].set_ylim((0, prbs))
+    axs[2].plot(steps, resources_ma)
+    axs[2].set_ylim((0, PRBS_MAX))
     axs[2].set_xlabel('stages')
     axs[2].set_ylabel('PRBs')
     axs[2].grid()
 
     axs[0].set_title('SLA violations')
-    axs[0].plot(steps, violations_mean[0:SPAN], label=label)
-    axs[0].fill_between(steps, violations_mean[0:SPAN] - 1.697 * violations_std[0:SPAN] / np.sqrt(runs),
-                        violations_mean[0:SPAN] + 1.697 * violations_std[0:SPAN] / np.sqrt(runs), color='#DDDDDD')
+    axs[0].plot(steps, violations_ma, label='PPO history_1')
     axs[0].set_xlabel('stages')
     axs[0].set_ylabel('SLA violations')
     axs[0].legend(loc='best')
     axs[0].grid()
 
     axs[1].set_title('Cumulative SLA violations')
-    axs[1].plot(steps, regret_mean[0:SPAN], label=label)
-    axs[1].fill_between(steps, regret_mean[0:SPAN] - 1.697 * regret_std[0:SPAN] / np.sqrt(runs),
-                        regret_mean[0:SPAN] + 1.697 * regret_std[0:SPAN] / np.sqrt(runs), color='#DDDDDD')
+    axs[1].plot(steps, regret_ma, label='PPO history_1')
     axs[1].set_xlabel('stages')
     axs[1].set_ylabel('cumulative SLA violations')
-    axs[1].set_ylim((0, 15000))
     axs[1].grid()
 
-fig.savefig('./figures/subplots_scenario_ppo.png', format='png')
-print("Plot saved to ./figures/subplots_scenario_ppo.png")
+    fig.savefig(OUTPUT_FILE, format='png')
+    print(f'Loaded: {INPUT_FILE}')
+    print(f'Plot saved to {OUTPUT_FILE}')

@@ -32,6 +32,10 @@ FILESNAMES = [
     './datasets/fading_trace_EVA_60kmph.csv'
     ]
 
+# MCS codeset filenames
+MCS_CODESET_EMBB  = './datasets/mcs_codeset.csv'
+MCS_CODESET_URLLC = './datasets/mcs_codeset_urllc.csv'
+
 def sigmoid(x, x0 = 0, k = 1):
     y = 1 / (1 + np.exp(-k*(x-x0)))
     return (y)
@@ -255,16 +259,28 @@ class SNRGenerator:
     
 class MCSCodeset:
     '''
-    Generates the response of the Modulation and Coding Scheme under a given SNR
+    Generates the response of the Modulation and Coding Scheme under a given SNR.
+
+    Two codesets are available, selected via the filename parameter:
+      - eMBB  (default): mcs_codeset.csv      — 64QAM max, BLER target 0.1
+      - URLLC           : mcs_codeset_urllc.csv — 64QAM max, BLER target 0.00001
+
+    The URLLC codeset follows 3GPP TS 38.214 Table 5.2.2.1-4 (CQI Table 3).
+    It uses the same modulation orders (QPSK / 16QAM / 64QAM) but more
+    conservative code rates, so higher SNR is required to reach the same
+    spectral efficiency.  The MIparameters dict covers all three modulations
+    used by both codesets — no changes needed there.
     '''
-    def __init__(self, filename = './datasets/mcs_codeset.csv'):
+    def __init__(self, filename = MCS_CODESET_EMBB):
         df = pd.read_csv(filename)
+        self.file = filename
         self.rate = df[["rate"]].to_numpy().flatten()
         self.snr = df[["snr"]].to_numpy().flatten()
         self.order = df[["order"]].to_numpy().flatten()
         self.modulation = df[["modulation"]].squeeze()
         self.n_mcs = len(self.snr)
         self.A, self.B = self.compute_factors(0.1)
+        # MIparameters covers qpsk / 16qam / 64qam — valid for both eMBB and URLLC codesets
         self.MIparameters = {'qpsk': [-0.25040431, 0.31591749],
                              '16qam': [5.12440916, 0.25423209],
                              '64qam': [9.16962738, 0.22298101]}
@@ -283,7 +299,8 @@ class MCSCodeset:
         # snr_ref is the one providing a 0.9 reception probability for the given mcs
         snr_ref = self.snr[mcs]
         x = self.A*(snr - snr_ref) - self.B
-        return sigmoid(x)
+        p = sigmoid(x)
+        return p
 
     def mcs_rate_vs_error(self, snr, error_upper_bound):
         # returns the highest mcs whose estimated error is below the given bound
@@ -291,6 +308,7 @@ class MCSCodeset:
         rx_prob = 1.0 - error_upper_bound
         for mcs in range(self.n_mcs):
             if self.estimate_rx_prob(mcs, snr) < rx_prob:
+
                 return max(mcs-1, 0), self.rate[mcs] * self.order[mcs]
         return mcs, self.rate[mcs] * self.order[mcs]
 
@@ -317,6 +335,157 @@ class MCSCodeset:
 
 
 if __name__ == '__main__':
+
+    SAMPLES = 400
+    PRBS = 150
+    SEED = 3547879
+
+    rng = default_rng(seed = SEED)
+
+    generator = SINRSelectiveFading(rng, 'macro_cell_urban_2GHz', n_prbs = PRBS)
+    for i in range(3):
+        generator.insert_user(i)
+        samples = np.empty((PRBS,SAMPLES))
+        for t in range(SAMPLES):
+            samples[:,t] = generator.get_snr(i)
+
+        print('user: {}, mean sinr = {}'.format(i, samples.mean()))
+        X = np.arange(SAMPLES)
+        Y = np.arange(PRBS)
+        X, Y = np.meshgrid(X, Y)
+
+        fig = plt.figure()
+        ax = fig.add_subplot(projection='3d')
+        surf = ax.plot_surface(X, Y, samples, cmap='autumn', linewidth=0.5, antialiased=False)
+        ax.set_zlim(-20,50)
+        fig.colorbar(surf, shrink=0.5, aspect=5)
+        fig.savefig('snr_sf_trace_{}'.format(i))
+
+    generator = SNRGenerator(rng)
+    for i in range(3):
+        generator.insert_user(i)
+        samples = [generator.get_snr(i, power = -5)[0] for _ in range(SAMPLES)]
+        fig = plt.figure()
+        ax = fig.add_subplot(1, 1, 1)
+        ax.plot(samples, color='tab:blue')
+        ax.set_xlabel('samples')
+        ax.set_ylabel('SNR')
+        ax.grid()
+        fig.savefig('snr_trace_{}'.format(i))
+
+    # ---- load both codesets ----
+    mcs_codeset      = MCSCodeset(MCS_CODESET_EMBB)
+    mcs_codeset_urllc = MCSCodeset(MCS_CODESET_URLLC)
+
+    SNR_vector = np.linspace(-5, 25, PRBS)
+
+    # ---- selected MCS vs SNR (both codesets) ----
+    embb_mcs_values  = []
+    urllc_mcs_values = []
+    for s in SNR_vector:
+        mcs, _ = mcs_codeset.mcs_rate_vs_error(s, 0.1)
+        embb_mcs_values.append(mcs)
+        mcs, _ = mcs_codeset_urllc.mcs_rate_vs_error(s, 0.1)
+        urllc_mcs_values.append(mcs)
+
+    fig, ax = plt.subplots()
+    ax.plot(SNR_vector, embb_mcs_values,  color='tab:blue',  label='eMBB (CQI Table 1)')
+    ax.plot(SNR_vector, urllc_mcs_values, color='tab:orange', label='URLLC (CQI Table 3)')
+    ax.set_xlabel('SNR (dB)')
+    ax.set_ylabel('MCS index')
+    ax.set_title('Selected MCS vs SNR')
+    ax.legend()
+    ax.grid()
+    fig.savefig('selected_mcs_comparison')
+
+    # ---- peak throughput vs SNR (both codesets) ----
+    embb_bits_p_sym  = []
+    urllc_bits_p_sym = []
+    for s in SNR_vector:
+        _, bits = mcs_codeset.mcs_rate_vs_error(s, 0.1)
+        embb_bits_p_sym.append(bits)
+        _, bits = mcs_codeset_urllc.mcs_rate_vs_error(s, 0.1)
+        urllc_bits_p_sym.append(bits)
+
+    fig, ax = plt.subplots()
+    ax.plot(SNR_vector, embb_bits_p_sym,  color='tab:blue',  label='eMBB (CQI Table 1)')
+    ax.plot(SNR_vector, urllc_bits_p_sym, color='tab:orange', label='URLLC (CQI Table 3)')
+    ax.set_xlabel('SNR (dB)')
+    ax.set_ylabel('Throughput (bits/symbol)')
+    ax.set_title('Peak throughput vs SNR')
+    ax.legend()
+    ax.grid()
+    fig.savefig('throughput_comparison')
+
+    # ---- per-MCS expected throughput — eMBB ----
+    fig, ax = plt.subplots()
+    for mcs in range(mcs_codeset.n_mcs):
+        response = [mcs_codeset.nominal_rate(mcs) * mcs_codeset.response(mcs, [s])
+                    for s in SNR_vector]
+        ax.plot(SNR_vector, response, color='tab:blue',
+                alpha=0.6, label='eMBB' if mcs == 0 else '_')
+    ax.set_xlabel('SNR (dB)')
+    ax.set_ylabel('Throughput (bps/Hz)')
+    ax.set_title('Per-MCS expected throughput — eMBB (CQI Table 1)')
+    ax.legend()
+    ax.grid()
+    fig.savefig('MCS_response_embb')
+
+    # ---- per-MCS expected throughput — URLLC ----
+    fig, ax = plt.subplots()
+    for mcs in range(mcs_codeset_urllc.n_mcs):
+        response = [mcs_codeset_urllc.nominal_rate(mcs) * mcs_codeset_urllc.response(mcs, [s])
+                    for s in SNR_vector]
+        ax.plot(SNR_vector, response, color='tab:orange',
+                alpha=0.6, label='URLLC' if mcs == 0 else '_')
+    ax.set_xlabel('SNR (dB)')
+    ax.set_ylabel('Throughput (bps/Hz)')
+    ax.set_title('Per-MCS expected throughput — URLLC (CQI Table 3)')
+    ax.legend()
+    ax.grid()
+    fig.savefig('MCS_response_urllc')
+
+    # ---- per-MCS expected throughput — both overlaid ----
+    fig, ax = plt.subplots()
+    for mcs in range(mcs_codeset.n_mcs):
+        response = [mcs_codeset.nominal_rate(mcs) * mcs_codeset.response(mcs, [s])
+                    for s in SNR_vector]
+        ax.plot(SNR_vector, response, color='tab:blue',
+                alpha=0.5, label='eMBB' if mcs == 0 else '_')
+    for mcs in range(mcs_codeset_urllc.n_mcs):
+        response = [mcs_codeset_urllc.nominal_rate(mcs) * mcs_codeset_urllc.response(mcs, [s])
+                    for s in SNR_vector]
+        ax.plot(SNR_vector, response, color='tab:orange',
+                alpha=0.5, label='URLLC' if mcs == 0 else '_')
+    ax.set_xlabel('SNR (dB)')
+    ax.set_ylabel('Throughput (bps/Hz)')
+    ax.set_title('Per-MCS expected throughput — eMBB vs URLLC')
+    ax.legend()
+    ax.grid()
+    fig.savefig('MCS_response_comparison')
+
+    # ---- per-MCS expected throughput with MI averaging — both overlaid ----
+    fig, ax = plt.subplots()
+    for mcs in range(mcs_codeset.n_mcs):
+        response = []
+        for s in SNR_vector:
+            snr_array = np.array([s-2, s-2, s, s+1, s+2])
+            response.append(mcs_codeset.nominal_rate(mcs) * mcs_codeset.response(mcs, snr_array))
+        ax.plot(SNR_vector, response, color='tab:blue',
+                alpha=0.5, label='eMBB' if mcs == 0 else '_')
+    for mcs in range(mcs_codeset_urllc.n_mcs):
+        response = []
+        for s in SNR_vector:
+            snr_array = np.array([s-2, s-2, s, s+1, s+2])
+            response.append(mcs_codeset_urllc.nominal_rate(mcs) * mcs_codeset_urllc.response(mcs, snr_array))
+        ax.plot(SNR_vector, response, color='tab:orange',
+                alpha=0.5, label='URLLC' if mcs == 0 else '_')
+    ax.set_xlabel('SNR (dB)')
+    ax.set_ylabel('Throughput (bps/Hz)')
+    ax.set_title('Per-MCS expected throughput with MI averaging — eMBB vs URLLC')
+    ax.legend()
+    ax.grid()
+    fig.savefig('MCS_response_MI_comparison')
 
     SAMPLES = 400
     PRBS = 150

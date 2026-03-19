@@ -16,7 +16,7 @@ from node_b import NodeB
 from slice_l1 import SliceL1eMBB, SliceL1mMTC, SliceL1URLLC
 from slice_ran import SliceRANmMTC, SliceRANeMBB, SliceRANURLC
 from schedulers import ProportionalFair
-from channel_models import SINRSelectiveFading, MCSCodeset
+from channel_models import SINRSelectiveFading, MCSCodeset, MCS_CODESET_EMBB, MCS_CODESET_URLLC
 from kbrl_control import KBRL_Control, Learner
 from algorithms.kernel import GaussianKernel
 from algorithms.projectron import SVvariable, Projectron
@@ -221,9 +221,15 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
 
     snr_generator = SINRSelectiveFading(rng, propagation_type, n_prbs = n_prbs)
 
-    mcs_codeset = MCSCodeset()
+    # eMBB and mMTC share the standard codeset (64QAM, BLER target 0.1)
+    mcs_codeset = MCSCodeset(MCS_CODESET_EMBB)
 
-    scheduler = ProportionalFair(mcs_codeset)
+    # URLLC uses the stricter codeset (64QAM max, BLER target 0.00001)
+    # following 3GPP TS 38.214 Table 5.2.2.1-4 (CQI Table 3)
+    mcs_codeset_urllc = MCSCodeset(MCS_CODESET_URLLC)
+
+    scheduler      = ProportionalFair(mcs_codeset)
+    scheduler_urllc = ProportionalFair(mcs_codeset_urllc)
 
     user_counter = count()
 
@@ -243,7 +249,8 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
 
         for id in range(n_urllc):
             slices_ran_urllc = [new_slice_urllc(id, rng, user_counter)]
-            slice_l1_urllc = SliceL1URLLC(rng, snr_generator, 15, slices_ran_urllc, scheduler)
+            # URLLC slice gets its own scheduler backed by the URLLC codeset
+            slice_l1_urllc = SliceL1URLLC(rng, snr_generator, 15, slices_ran_urllc, scheduler_urllc)
             slices_l1.append(slice_l1_urllc)
 
     else: # slices are multiplexed in the L1 (the scheduler should handle ues from different slices) 
@@ -259,7 +266,8 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
 
         if n_urllc > 0:
             slices_ran_urllc = [new_slice_urllc(id, rng, user_counter) for id in range(n_urllc)]
-            slice_l1_urllc = SliceL1URLLC(rng, snr_generator, 15, slices_ran_urllc, scheduler)
+            # URLLC slice gets its own scheduler backed by the URLLC codeset
+            slice_l1_urllc = SliceL1URLLC(rng, snr_generator, 15, slices_ran_urllc, scheduler_urllc)
             slices_l1.append(slice_l1_urllc)
 
     node = NodeB(slices_l1, slots_per_step, n_prbs)

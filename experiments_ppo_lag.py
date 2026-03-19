@@ -27,7 +27,7 @@ SLOTS_PER_STEP = 500
 PENALTY = 1000
 EVALUATION_STEPS = 5000
 
-ENV_ID = "RanSlicePPO-v0"
+ENV_ID = "RanSlicePPOLag-v0"
 
 _RNG         = np.random.default_rng(3)
 _SCEN        = 4
@@ -97,8 +97,9 @@ class RanSliceEnv(CMDP):
             obs, reward, terminated, truncated, info = result
             terminated, truncated = bool(terminated), bool(truncated)
 
-        reward = float(reward) + float(excess)
+        reward = float(reward) 
         cost = float(info.get("cost", 0.0))
+        print(f'Action taken: {alloc_prbs}, Reward: {reward:.4f}, Cost: {cost:.4f}')
 
         self._step_count += 1
         if self._step_count >= self._max_episode_steps:
@@ -174,7 +175,7 @@ class Evaluator():
         }
 
         agent = omnisafe.Agent(
-            algo="PPO",
+            algo="PPOLag",
             env_id=ENV_ID,
             custom_cfgs=custom_cfgs,
         )
@@ -183,12 +184,12 @@ class Evaluator():
         agent.learn()
         print('Training done!')
         agent.plot(smooth=1)
-
+        # ==================== EVALUATION ====================
       
 
 
 if __name__=='__main__':
-    parser = argparse.ArgumentParser(description="Train PPO on RanSlice with OmniSafe")
+    parser = argparse.ArgumentParser(description="Train PPO  lag on RanSlice with OmniSafe")
     parser.add_argument("--scenario", type=int, default=SCENARIO)
     parser.add_argument("--runs", type=int, default=RUNS)
     args = parser.parse_args()

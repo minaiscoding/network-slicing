@@ -52,7 +52,7 @@ class RanSlice(gym.Env):
         
         if total_violations > 0:
             # if SLA not fulfilled the reward is negative
-            reward = -1 * self.penalty * total_violations
+            reward = 0
         else:
             # if SLA fulfilled the reward is the amount of free resources
             reward = max(0, self.node_b.n_prbs - action.sum())
