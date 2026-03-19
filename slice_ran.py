@@ -33,7 +33,7 @@ class UE:
     Tracks HOL delay, HARQ retransmissions, and packet-level BLER.
     '''
     def __init__(self, id, slice_ran_id, traffic_source, type,
-                 window=50, slot_length=1e-4, harq_max_retransmissions=2):
+                 window=50, slot_length=1e-4, harq_max_retransmissions=5):
         self.id = id
         self.slice_ran_id = slice_ran_id
         self.traffic_source = traffic_source
@@ -246,7 +246,7 @@ class SliceRANeMBB:
     def __init__(self, rng, user_counter, id, SLA,
                  CBR_description, VBR_description,
                  state_variables, norm_const, slots_per_step,
-                 slot_length=1e-4, harq_max_retransmissions=9):
+                 slot_length=1e-4, harq_max_retransmissions=10):
         self.type = 'eMBB'
         self.rng = rng
         self.user_counter = user_counter
@@ -432,6 +432,7 @@ class SliceRANeMBB:
         self.info['vbr_harq_retrans'] += harq_retrans
 
     def update_bler(self):
+  
         """
         BLER computed once per step after slot loop.
         Called from NodeB.step(). Always in [0, 1].
@@ -449,6 +450,10 @@ class SliceRANeMBB:
             vbr_bler += ue.get_bler()
             n += 1
         self.info['vbr_bler'] = vbr_bler / max(n, 1)
+        print('bler debug: cbr_bler={:.3f} ({} packets), vbr_bler={:.3f} ({} packets)'.format(
+            self.info['cbr_bler'], self.info['cbr_harq_drops'], self.info['vbr_bler'], self.info['vbr_harq_drops']
+        ))
+
 
     def compute_reward(self):
         """
@@ -468,10 +473,7 @@ class SliceRANeMBB:
 
         cbr_fulfilled = (cbr_th or cbr_queue) and cbr_delay and cbr_bler
         vbr_fulfilled = (vbr_th or vbr_queue) and vbr_delay and vbr_bler
-        print('bler debug: cbr_bler={:.3f} ({} packets), vbr_bler={:.3f} ({} packets)'.format(
-            self.info['cbr_bler'], self.info['cbr_harq_drops'],
-            self.info['vbr_bler'], self.info['vbr_harq_drops']
-        ))
+
         return not (cbr_fulfilled and vbr_fulfilled)
 
     def get_state(self):
@@ -493,7 +495,7 @@ class SliceRANURLC(SliceRANeMBB):
     def __init__(self, rng, user_counter, id, SLA,
                  CBR_description, VBR_description,
                  state_variables, norm_const, slots_per_step,
-                 slot_length=1e-4, harq_max_retransmissions=2):
+                 slot_length=1e-4, harq_max_retransmissions=5):
         super().__init__(rng, user_counter, id, SLA,
                          CBR_description, VBR_description,
                          state_variables, norm_const,
@@ -574,8 +576,5 @@ class SliceRANURLC(SliceRANeMBB):
 
         cbr_fulfilled = (cbr_th or cbr_queue) and cbr_delay and cbr_bler
         vbr_fulfilled = (vbr_th or vbr_queue) and vbr_delay and vbr_bler
-        print('bler debug urllc: cbr_bler={:.3f} ({} packets), vbr_bler={:.3f} ({} packets)'.format(
-            self.info['cbr_bler'], self.info['cbr_harq_drops'],
-            self.info['vbr_bler'], self.info['vbr_harq_drops']
-        ))
+
         return not (cbr_fulfilled and vbr_fulfilled)
