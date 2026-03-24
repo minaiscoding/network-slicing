@@ -16,16 +16,21 @@ VBR = 1
 
 import numpy as np
 from traffic_generators import VbrSource, CbrSource
+from channel_models import generate_xy
 
 class UE:
     '''
     eMBB UE contains a traffic source that can be CRB (GBR) or VBR (non-GBR)
     '''
-    def __init__(self, id, slice_ran_id, traffic_source, type, window = 50, slot_length = 1e-3):
+    def __init__(self, id, slice_ran_id, traffic_source, type, x=0, y=0, vx=0, vy=0, window = 50, slot_length = 1e-3):
         self.id = id
         self.slice_ran_id = slice_ran_id
         self.traffic_source = traffic_source
         self.type = type
+        self.x = x  # x coordinate
+        self.y = y  # y coordinate
+        self.vx = vx  # velocity in x
+        self.vy = vy  # velocity in y
         self.th = 0
         self.b = 1/window
         self.a = 1 - self.b
@@ -39,7 +44,7 @@ class UE:
         self.bits = 0 # assigned bits
         self.prbs = 0 # assigned prbs
         self.p = 0 # reception probability
-    
+
     def estimate_snr(self, snr):
         self.snr = snr
         self.e_snr = round(np.mean(snr))
@@ -47,12 +52,23 @@ class UE:
     def traffic_step(self):
         self.new_bits = self.traffic_source.step()
         self.queue += self.new_bits
-    
+
     def transmission_step(self, received):
         if not received:
             self.bits = 0
         self.queue = max(self.queue - self.bits, 0)
         self.th = self.a * self.th + self.b * self.bits / self.slot_length
+
+    def update_position(self, dt):
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+
+    def get_state(self):
+        '''
+        Returns a vector representing the UE state:
+        [queue, throughput, estimated SNR, assigned bits, x, y]
+        '''
+        return np.array([self.queue, self.th, self.e_snr, self.bits, self.x, self.y], dtype=float)
 
     def __repr__(self):
         return 'UE {}'.format(self.id)
@@ -65,6 +81,13 @@ class MTCdevice:
     def __repr__(self):
         return 'MTC {}'.format(self.id)
 
+
+
+
+
+"""
+this is the same as the old similator 
+"""
 class SliceRANmMTC:
     '''
     Generates message arrivals at the mMTC devices
@@ -135,6 +158,7 @@ class SliceRANmMTC:
         for i, var in enumerate(self.state_variables):
             self.state[i] = self.info[var] / self.norm_const[var]        
         return self.state
+
 
     def update_info(self, delay, avg_rep, devices):
         self.info['delay'] += delay
@@ -214,6 +238,10 @@ class SliceRANeMBB:
                 ue_id = next(self.user_counter)
                 cbr_source = CbrSource(bit_rate = self.cbr_bit_rate)
                 ue = UE(ue_id, self.id, cbr_source, CBR)
+                # Assign coordinates and velocity
+                ue.x, ue.y = generate_xy(self.rng)
+                ue.vx = self.rng.normal(0, 5)  # random velocity in x (km/h)
+                ue.vy = self.rng.normal(0, 5)  # random velocity in y (km/h)
                 self.cbr_ues[ue_id] = ue
 
                 # generate holding time
@@ -232,6 +260,10 @@ class SliceRANeMBB:
             ue_id = next(self.user_counter)
             vbr_source = VbrSource(**self.vbr_source_data)
             ue = UE(ue_id, self.id, vbr_source, VBR)
+            # Assign coordinates and velocity
+            ue.x, ue.y = generate_xy(self.rng)
+            ue.vx = self.rng.normal(0, 5)  # random velocity in x (km/h)
+            ue.vy = self.rng.normal(0, 5)  # random velocity in y (km/h)
             self.vbr_ues[ue_id] = ue
 
             # generate holding time
@@ -334,3 +366,46 @@ class SliceRANURLC(SliceRANeMBB):
         super().__init__(rng, user_counter, id, SLA, CBR_description, VBR_description, state_variables, norm_const, slots_per_step, slot_length)
         self.type = 'URLLC'
 
+ #test for cordinate
+if __name__ == '__main__':
+    import matplotlib.pyplot as plt
+    from numpy.random import default_rng
+    
+    # Test UE creation and attributes
+    rng = default_rng(seed=42)
+    ues = []
+    for i in range(10):
+        ue = UE(i, 0, CbrSource(bit_rate=1000), CBR)
+        ue.x, ue.y = generate_xy(rng)
+        ue.vx = rng.normal(0, 5)
+        ue.vy = rng.normal(0, 5)
+        ues.append(ue)
+        print(f"UE {ue.id}: x={ue.x:.2f}, y={ue.y:.2f}, vx={ue.vx:.2f}, vy={ue.vy:.2f}")
+    
+    # Plot UE positions
+    fig, ax = plt.subplots(figsize=(8, 8))
+    
+    # Hexagon boundary
+    hex_x = [0, 0.25, 0.75, 1, 0.75, 0.25, 0]
+    hex_y = [0.5, 1, 1, 0.5, 0, 0, 0.5]
+    ax.plot(hex_x, hex_y, 'k-', linewidth=2, label='Cell Boundary')
+    ax.fill(hex_x, hex_y, 'lightgray', alpha=0.3)
+    
+    # gNodeB
+    ax.scatter(0.5, 0.5, c='red', s=200, marker='^', label='gNodeB', zorder=5)
+    
+    # UEs
+    for ue in ues:
+        ax.scatter(ue.x, ue.y, c='blue', s=50, alpha=0.7)
+        ax.annotate(f'{ue.id}', (ue.x, ue.y), textcoords="offset points", xytext=(0,10), ha='center')
+    
+    ax.set_xlabel('X Coordinate (normalized)')
+    ax.set_ylabel('Y Coordinate (normalized)')
+    ax.set_title('UE Test: Positions and Velocities')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    ax.set_aspect('equal')
+    
+    plt.savefig('ue_test_plot.png', dpi=300, bbox_inches='tight')
+    print("UE test plot saved as 'ue_test_plot.png'")
+    plt.show()
