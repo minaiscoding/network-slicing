@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*- oussama
 #test
 """
 @author: juanjosealcaraz
@@ -10,7 +10,7 @@ NominalSINR
 SINRSelectiveFading
 SNRGenerator
 MCSCodeset
-
+dsgsghjxvcdl
 """
 
 import pandas as pd
