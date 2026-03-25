@@ -141,14 +141,26 @@ state_variables_urllc = ['cbr_traffic','cbr_th', 'cbr_prb', \
                         'vbr_queue', 'vbr_snr',  ]
 
 
-
-def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban_2GHz', L1_level = True, penalty = 100):
+def create_env(
+    rng,
+    n,
+    slots_per_step=50,
+    propagation_type='macro_cell_urban_2GHz',
+    L1_level=True,
+    penalty=100,
+    node_id=0,
+    node_x=0.0,
+    node_y=0.0,
+    coverage_radius=500,
+    slot_length=1e-3
+):
     '''
     Returns slice ran environment:
-    - rng: for random number generation
-    - n: selects the scenario (0, 1, 2)
+    - rng: random number generator
+    - n: scenario index
     '''
-    time_per_step = slots_per_step * 1e-3
+
+    time_per_step = slots_per_step * slot_length
 
     sc = scenarios[n]
     n_prbs = sc['n_prbs']
@@ -156,7 +168,7 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
     n_mmtc = sc['n_mmtc']
     n_urllc = sc.get('n_urllc', 0)
 
-    # -------------------- eMBB normalization constants ----------------------
+    # -------------------- normalization constants ----------------------
 
     norm_const_embb = {
         'cbr_traffic': 5e6 * time_per_step,
@@ -164,18 +176,13 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
         'cbr_prb': 25 * slots_per_step,
         'cbr_queue': 10e4 * slots_per_step,
         'cbr_snr': 35 * slots_per_step,
-        
-   
-        'vbr_traffic': 5e6 * time_per_step, 
-        'vbr_th': 10e6 * time_per_step, 
-        'vbr_prb': 35 * slots_per_step, 
-        'vbr_queue': 10e4 * slots_per_step, 
+
+        'vbr_traffic': 5e6 * time_per_step,
+        'vbr_th': 10e6 * time_per_step,
+        'vbr_prb': 35 * slots_per_step,
+        'vbr_queue': 10e4 * slots_per_step,
         'vbr_snr': 35 * slots_per_step,
-        
-
     }
-
-    # -------------------- mMTC normalization constants -----------------------
 
     norm_const_mmtc = {
         'devices': 100 * slots_per_step,
@@ -183,87 +190,99 @@ def create_env(rng, n, slots_per_step = 50, propagation_type = 'macro_cell_urban
         'delay': 100 * slots_per_step
     }
 
-    # -------------------- URLLC normalization constants -----------------------
-
     norm_const_urllc = {
         'cbr_traffic': 2e6 * time_per_step,
         'cbr_th': 5e6 * time_per_step,
         'cbr_prb': 15 * slots_per_step,
         'cbr_queue': 5e3 * slots_per_step,
         'cbr_snr': 35 * slots_per_step,
-        
 
-        'vbr_traffic': 2e6 * time_per_step, 
-        'vbr_th': 7e6 * time_per_step, 
-        'vbr_prb': 20 * slots_per_step, 
-        'vbr_queue': 5e3 * slots_per_step, 
+        'vbr_traffic': 2e6 * time_per_step,
+        'vbr_th': 7e6 * time_per_step,
+        'vbr_prb': 20 * slots_per_step,
+        'vbr_queue': 5e3 * slots_per_step,
         'vbr_snr': 35 * slots_per_step,
-       
-
     }
 
     # ------------------- auxiliary functions -----------------------
 
-    def new_slice_mmtc(id, rng):
-        return SliceRANmMTC(rng, id, SLA_mmtc, MTC_description, state_variables_mmtc, norm_const_mmtc, slots_per_step)
+    def new_slice_mmtc(id_, rng_):
+        return SliceRANmMTC(
+            rng_, id_, SLA_mmtc, MTC_description,
+            state_variables_mmtc, norm_const_mmtc, slots_per_step
+        )
 
-    def new_slice_embb(id, rng, user_counter):
-        return SliceRANeMBB(rng, user_counter, id, SLA_embb, CBR_description, VBR_description, state_variables_embb, norm_const_embb, slots_per_step)
+    def new_slice_embb(id_, rng_, user_counter_):
+        return SliceRANeMBB(
+            rng_, user_counter_, id_, SLA_embb,
+            CBR_description, VBR_description,
+            state_variables_embb, norm_const_embb, slots_per_step,
+            slot_length=slot_length
+        )
 
-    def new_slice_urllc(id, rng, user_counter):
-        return SliceRANURLC(rng, user_counter, id, SLA_urllc, URLLC_CBR_description, URLLC_VBR_description, state_variables_urllc, norm_const_urllc, slots_per_step)
+    def new_slice_urllc(id_, rng_, user_counter_):
+        return SliceRANURLC(
+            rng_, user_counter_, id_, SLA_urllc,
+            URLLC_CBR_description, URLLC_VBR_description,
+            state_variables_urllc, norm_const_urllc, slots_per_step,
+            slot_length=slot_length
+        )
 
     # ------------------- environment creation ------------------------
 
-    snr_generator = SINRSelectiveFading(rng, propagation_type, n_prbs = n_prbs)
-
+    snr_generator = SINRSelectiveFading(rng, propagation_type, n_prbs=n_prbs)
     mcs_codeset = MCSCodeset()
-
     scheduler = ProportionalFair(mcs_codeset)
-
     user_counter = count()
 
     slices_l1 = []
 
-    if L1_level: # each slice has its own L1 resources
-
-        for id in range(n_embb):
-            slices_ran_embb = [new_slice_embb(id, rng, user_counter)]
+    if L1_level:
+        for id_ in range(n_embb):
+            slices_ran_embb = [new_slice_embb(id_, rng, user_counter)]
             slice_l1_embb = SliceL1eMBB(rng, snr_generator, 20, slices_ran_embb, scheduler)
             slices_l1.append(slice_l1_embb)
 
-        for id in range(n_mmtc):
-            slices_ran_mmtc = [new_slice_mmtc(id, rng)]
+        for id_ in range(n_mmtc):
+            slices_ran_mmtc = [new_slice_mmtc(id_, rng)]
             slice_l1_mmtc = SliceL1mMTC(5, slices_ran_mmtc)
             slices_l1.append(slice_l1_mmtc)
 
-        for id in range(n_urllc):
-            slices_ran_urllc = [new_slice_urllc(id, rng, user_counter)]
+        for id_ in range(n_urllc):
+            slices_ran_urllc = [new_slice_urllc(id_, rng, user_counter)]
             slice_l1_urllc = SliceL1URLLC(rng, snr_generator, 15, slices_ran_urllc, scheduler)
             slices_l1.append(slice_l1_urllc)
 
-    else: # slices are multiplexed in the L1 (the scheduler should handle ues from different slices) 
-
-        slices_ran_embb = [new_slice_embb(id, rng, user_counter) for id in range(n_embb)]
-        slice_l1_embb = SliceL1eMBB(rng, snr_generator, 20, slices_ran_embb, scheduler)
-        slices_l1 = [slice_l1_embb]
+    else:
+        if n_embb > 0:
+            slices_ran_embb = [new_slice_embb(id_, rng, user_counter) for id_ in range(n_embb)]
+            slice_l1_embb = SliceL1eMBB(rng, snr_generator, 20, slices_ran_embb, scheduler)
+            slices_l1.append(slice_l1_embb)
 
         if n_mmtc > 0:
-            slices_ran_mmtc = [new_slice_mmtc(id, rng) for id in range(n_mmtc)]
+            slices_ran_mmtc = [new_slice_mmtc(id_, rng) for id_ in range(n_mmtc)]
             slice_l1_mmtc = SliceL1mMTC(5, slices_ran_mmtc)
             slices_l1.append(slice_l1_mmtc)
 
         if n_urllc > 0:
-            slices_ran_urllc = [new_slice_urllc(id, rng, user_counter) for id in range(n_urllc)]
+            slices_ran_urllc = [new_slice_urllc(id_, rng, user_counter) for id_ in range(n_urllc)]
             slice_l1_urllc = SliceL1URLLC(rng, snr_generator, 15, slices_ran_urllc, scheduler)
             slices_l1.append(slice_l1_urllc)
 
-    node = NodeB(slices_l1, slots_per_step, n_prbs)
+    node = NodeB(
+        id=node_id,
+        x=node_x,
+        y=node_y,
+        slices_l1=slices_l1,
+        slots_per_step=slots_per_step,
+        n_prbs=n_prbs,
+        coverage_radius=coverage_radius,
+        slot_length=slot_length
+    )
 
-    node_env = gym.make('gym_ran_slice:RanSlice-v1', node_b = node, penalty = penalty)
+    node_env = gym.make('gym_ran_slice:RanSlice-v1', node_b=node, penalty=penalty)
 
     return node_env
-
 # ------------ KBRL Learner initialization values ------------------
 
 alfa = 0.05 # learning parameter
