@@ -20,38 +20,92 @@ from channel_models import generate_xy
 
 class UE:
     '''
-    eMBB UE contains a traffic source that can be CRB (GBR) or VBR (non-GBR)
+    eMBB/URLLC UE with mobility, queue, radio, and serving-cell information.
     '''
-    def __init__(self, id, slice_ran_id, traffic_source, type, x=0, y=0, vx=0, vy=0, window = 50, slot_length = 1e-3):
+    def __init__(
+        self,
+        id,
+        slice_ran_id,
+        traffic_source,
+        type,
+        x=0,
+        y=0,
+        vx=0,
+        vy=0,
+        window=50,
+        slot_length=1e-3,
+        slice_type=None,
+        buffer_size=np.inf
+    ):
         self.id = id
         self.slice_ran_id = slice_ran_id
+        self.slice_type = slice_type
         self.traffic_source = traffic_source
         self.type = type
-        self.x = x  # x coordinate
-        self.y = y  # y coordinate
-        self.vx = vx  # velocity in x
-        self.vy = vy  # velocity in y
-        self.th = 0
-        self.b = 1/window
-        self.a = 1 - self.b
-        self.queue = 0
-        self.slot_length = slot_length
 
-        # per subframe variables
-        self.snr = 0 # real error values per prb
-        self.e_snr = 0 # estimated error
-        self.new_bits = 0 # incoming bits
-        self.bits = 0 # assigned bits
-        self.prbs = 0 # assigned prbs
-        self.p = 0 # reception probability
+        # Mobility
+        self.x = x
+        self.y = y
+        self.vx = vx
+        self.vy = vy
+
+        # Serving / handover
+        self.serving_gnb = None
+        self.target_gnb = None
+        self.connected = True
+        self.ho_pending = False
+        self.ho_candidate = None
+        self.ho_counter = 0
+
+        # Throughput smoothing
+        self.th = 0
+        self.b = 1 / window
+        self.a = 1 - self.b
+
+        # Queue / traffic
+        self.queue = 0
+        self.buffer_size = buffer_size
+        self.slot_length = slot_length
+        self.new_bits = 0
+        self.bits = 0
+        self.dropped_bits = 0
+        self.total_bits_arrived = 0
+
+        # Delay
+        self.wait_time = 0
+
+        # Radio variables
+        self.snr = 0
+        self.e_snr = 0
+        self.sinr = 0
+        self.e_sinr = 0
+        self.prbs = 0
+        self.p = 0
+        self.mcs = None
+        self.spectral_efficiency = 0.0
+
+        # Debug radio metrics
+        self.serving_power_dbm = -np.inf
+        self.interference_dbm = -np.inf
+        self.noise_dbm = -np.inf
 
     def estimate_snr(self, snr):
         self.snr = snr
         self.e_snr = round(np.mean(snr))
 
+    def estimate_sinr(self, sinr):
+        self.sinr = sinr
+        self.e_sinr = round(np.mean(sinr)) if hasattr(sinr, "__len__") else float(sinr)
+
     def traffic_step(self):
         self.new_bits = self.traffic_source.step()
+        self.total_bits_arrived += self.new_bits
         self.queue += self.new_bits
+
+        if self.queue > self.buffer_size:
+            overflow = self.queue - self.buffer_size
+            self.dropped_bits += overflow
+            self.queue = self.buffer_size
 
     def transmission_step(self, received):
         if not received:
@@ -64,15 +118,17 @@ class UE:
         self.y += self.vy * dt
 
     def get_state(self):
-        '''
-        Returns a vector representing the UE state:
-        [queue, throughput, estimated SNR, assigned bits, x, y]
-        '''
-        return np.array([self.queue, self.th, self.e_snr, self.bits, self.x, self.y], dtype=float)
+        return np.array([
+            self.queue,
+            self.th,
+            self.e_sinr if self.e_sinr != 0 else self.e_snr,
+            self.bits,
+            self.x,
+            self.y
+        ], dtype=float)
 
     def __repr__(self):
-        return 'UE {}'.format(self.id)
-
+        return f'UE {self.id}'
 class MTCdevice:
     def __init__(self, id, repetitions, slice_ran_id):
         self.id = id
