@@ -7,17 +7,17 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-WINDOW    = 400
+WINDOW    = 500
 START     = 0
-MAX_STEPS = 30000
+MAX_STEPS = 20000
 PRBS_MAX  = 150
 
 OUTPUT_FILE = './figures/subplots_scenario_comparison.png'
 
 SCENARIOS = {
-    'low':       ('results/low/PPOLag_eval/history_1.npz',       '#2196F3'),
-    'medium':    ('results/medium/PPOLag_eval/history_1.npz',    '#FF9800'),
-    'congested': ('results/congested/PPOLag_eval/history_1.npz', '#F44336'),
+    'low':       ('results/scenario_comparison/TD3Lag/history_1.npz',       '#2196F3'),
+    'medium':    ('results/scenario_comparison/TD3Lag/history_1.npz',    '#FF9800'),
+    'congested': ('results/scenario_comparison/TD3Lag/history_1.npz', '#F44336'),
 }
 
 def movingaverage(values, window):
