@@ -32,12 +32,14 @@ class ReportWrapper(gym.Wrapper):
     """
     :param env: (gym.Env) Gym environment that will be wrapped
     this environment holds the history of the env variables
-    - self.violation_history
+    - self.violation_history (total violations per step)
     - self.reward_history
-    - self.action_history 
+    - self.action_history (total PRBs per step)
+    - self.violation_per_slice_history (violations per slice per step)
+    - self.resource_per_slice_history (PRBs allocated per slice per step)
     done = True if the number of steps is reached
     """
-    def __init__(self, env, steps = 2000, control_steps = 500, env_id = 1, extra_samples = 10, path = './logs/', verbose = False):
+    def __init__(self, env, steps = 2000, control_steps = 500, env_id = 1, extra_samples = 10, path = './logs/', verbose = False, continuous_mode = False):
         # Call the parent constructor, so we can access self.env later
         
         super(ReportWrapper, self).__init__(env)
@@ -53,10 +55,11 @@ class ReportWrapper(gym.Wrapper):
         self.path = path
         self.file_path = '{}history_{}.npz'.format(path, env_id)
         self.extra_samples = extra_samples # for safety
-        self.reset_history()
+        self.continuous_mode = continuous_mode  # If True, don't reset step_counter on reset()
         self.n_slices = self.env.unwrapped.n_slices
         self.n_prbs = self.env.unwrapped.n_prbs
         self.n_variables = self.env.unwrapped.n_variables
+        self.reset_history()
 
         print('n_prbs = {}'.format(self.env.unwrapped.n_prbs))
         print('n_slices = {}'.format(self.env.unwrapped.n_slices))
@@ -65,13 +68,17 @@ class ReportWrapper(gym.Wrapper):
         self.violation_history = np.zeros((self.steps), dtype = int)
         self.reward_history = np.zeros((self.steps), dtype = float)
         self.action_history = np.zeros((self.steps), dtype = int)
+        # Per-slice metrics
+        self.violation_per_slice_history = np.zeros((self.steps, self.n_slices), dtype = int)
+        self.resource_per_slice_history = np.zeros((self.steps, self.n_slices), dtype = int)
   
     def reset(self, seed=None, options=None):
         """
         Reset the environment
         """
         print('Resetting environment {}...'.format(self.env_id))
-        self.step_counter = 0
+        if not self.continuous_mode:
+            self.step_counter = 0
         result = self.env.reset(seed=seed, options=options)
         # Handle both old (obs,) and new (obs, info) reset signatures
         if isinstance(result, tuple):
@@ -113,11 +120,16 @@ class ReportWrapper(gym.Wrapper):
 
         # Collect historical data
         violations = info.get('total_violations', 0)
+        per_slice_violations = info.get('violations', np.zeros(self.n_slices, dtype=int))
 
         if self.step_counter < self.steps:
             self.violation_history[self.step_counter] = violations
             self.reward_history[self.step_counter] = reward
             self.action_history[self.step_counter] = action.sum()
+            # Per-slice metrics
+            if hasattr(per_slice_violations, '__len__') and len(per_slice_violations) == self.n_slices:
+                self.violation_per_slice_history[self.step_counter] = per_slice_violations
+            self.resource_per_slice_history[self.step_counter] = action[:self.n_slices] if len(action) >= self.n_slices else action
 
         # increment counter
         self.step_counter += 1
@@ -129,12 +141,17 @@ class ReportWrapper(gym.Wrapper):
             print('Environment {}: {}/{} steps, reward: {}, violations: {}'.format(
                 self.env_id, self.step_counter, self.steps, reward, violations))
 
-        return obs, reward, terminated, truncated, {"cost": float(violations)}
+        info["cost"] = float(violations)
+        return obs, reward, terminated, truncated, info
 
     def save_results(self):
-        np.savez(self.file_path, violation = self.violation_history, 
-                                reward = self.reward_history,
-                                resources = self.action_history)
+        np.savez(self.file_path, 
+                 violation = self.violation_history, 
+                 reward = self.reward_history,
+                 resources = self.action_history,
+                 violation_per_slice = self.violation_per_slice_history,
+                 resource_per_slice = self.resource_per_slice_history,
+                 n_slices = self.n_slices)
     
     def set_evaluation(self, eval_steps, new_path = None, change_name = False):
         self.step_counter = self.steps
@@ -142,6 +159,9 @@ class ReportWrapper(gym.Wrapper):
         self.violation_history = np.pad(self.violation_history, [(0, eval_steps)])
         self.reward_history = np.pad(self.reward_history, [(0, eval_steps)])
         self.action_history = np.pad(self.action_history, [(0, eval_steps)])
+        # Pad per-slice arrays
+        self.violation_per_slice_history = np.pad(self.violation_per_slice_history, [(0, eval_steps), (0, 0)])
+        self.resource_per_slice_history = np.pad(self.resource_per_slice_history, [(0, eval_steps), (0, 0)])
         if new_path:
             self.path = new_path
         if change_name:
