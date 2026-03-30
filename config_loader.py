@@ -58,6 +58,62 @@ _ZERO_VBR = {
 }
 
 
+# Default UE profiles: uniform mobility, no traffic_mix override
+_DEFAULT_UE_PROFILES = {
+    'mobility': {
+        'pedestrian': 1.0 / 3,   # EPA 3km/h  (fading index 0)
+        'urban':      1.0 / 3,   # ETU 3km/h  (fading index 1)
+        'vehicular':  1.0 / 3,   # EVA 60km/h (fading index 2)
+    },
+    'traffic_mix': {
+        'cbr': 0.5,
+        'vbr': 0.5,
+    },
+}
+
+# Map mobility names to fading trace indices in SINRSelectiveFading
+MOBILITY_TO_FADING_INDEX = {
+    'pedestrian': 0,   # EPA_3kmph
+    'urban':      1,   # ETU_3kmph
+    'vehicular':  2,   # EVA_60kmph
+}
+
+
+def _parse_ue_profiles(slice_cfg: dict) -> dict:
+    """
+    Parse optional ue_profiles block from a slice config.
+
+    Expected YAML:
+        ue_profiles:
+          mobility:
+            pedestrian: 0.3
+            urban: 0.5
+            vehicular: 0.2
+          traffic_mix:
+            cbr: 0.7
+            vbr: 0.3
+
+    Returns dict with 'mobility' (name->weight) and 'traffic_mix' (cbr/vbr weights).
+    Weights are normalized to sum to 1.
+    """
+    raw = slice_cfg.get('ue_profiles', {})
+    profiles = dict(_DEFAULT_UE_PROFILES)  # shallow copy defaults
+
+    if 'mobility' in raw:
+        mob = dict(raw['mobility'])
+        total = sum(mob.values())
+        if total > 0:
+            profiles['mobility'] = {k: v / total for k, v in mob.items()}
+
+    if 'traffic_mix' in raw:
+        mix = dict(raw['traffic_mix'])
+        total = sum(mix.values())
+        if total > 0:
+            profiles['traffic_mix'] = {k: v / total for k, v in mix.items()}
+
+    return profiles
+
+
 def _parse_embb_traffic(slice_cfg: dict) -> dict:
     """
     Build the 'embb' sub-dict for traffic_config from one YAML slice block.
@@ -75,6 +131,7 @@ def _parse_embb_traffic(slice_cfg: dict) -> dict:
     else:
         out['vbr'] = dict(_ZERO_VBR)   # disabled
 
+    out['ue_profiles'] = _parse_ue_profiles(slice_cfg)
     return out
 
 
@@ -91,6 +148,7 @@ def _parse_urllc_traffic(slice_cfg: dict) -> dict:
     else:
         out['vbr'] = dict(_ZERO_VBR)
 
+    out['ue_profiles'] = _parse_ue_profiles(slice_cfg)
     return out
 
 

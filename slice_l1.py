@@ -183,7 +183,8 @@ class SliceL1eMBB:
     def add_users(self, ue_list):
         for ue in ue_list:
             self.ues.append(ue)
-            self.snr_generator.insert_user(ue.id)
+            fading_type = getattr(ue, 'fading_type', None)
+            self.snr_generator.insert_user(ue.id, fading_type=fading_type)
 
     def extract_users(self, ue_id_list):
         for ue_id in ue_id_list:

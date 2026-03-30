@@ -531,14 +531,18 @@ def create_env_from_config(cfg,
                             state_variables_mmtc, norm_const_mmtc, slots_per_step)
 
     def new_slice_embb(id):
+        embb_ue_profiles = cfg.traffic_config.get('embb', {}).get('ue_profiles', None)
         return SliceRANeMBB(rng, user_counter, id, SLA_embb,
                             CBR_description, VBR_description,
-                            state_variables_embb, norm_const_embb, slots_per_step)
+                            state_variables_embb, norm_const_embb, slots_per_step,
+                            ue_profiles=embb_ue_profiles)
 
     def new_slice_urllc(id):
+        urllc_ue_profiles = cfg.traffic_config.get('urllc', {}).get('ue_profiles', None)
         return SliceRANURLC(rng, user_counter, id, SLA_urllc,
                             URLLC_CBR_description, URLLC_VBR_description,
-                            state_variables_urllc, norm_const_urllc, slots_per_step)
+                            state_variables_urllc, norm_const_urllc, slots_per_step,
+                            ue_profiles=urllc_ue_profiles)
 
     # ------------------- environment creation ------------------------------
 

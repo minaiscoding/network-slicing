@@ -33,7 +33,8 @@ class UE:
     Tracks HOL delay, HARQ retransmissions, and packet-level BLER.
     '''
     def __init__(self, id, slice_ran_id, traffic_source, type,
-                 window=50, slot_length=1e-4, harq_max_retransmissions=5):
+                 window=50, slot_length=1e-4, harq_max_retransmissions=5,
+                 fading_type=None):
         self.id = id
         self.slice_ran_id = slice_ran_id
         self.traffic_source = traffic_source
@@ -43,6 +44,7 @@ class UE:
         self.a = 1 - self.b
         self.queue = 0
         self.slot_length = slot_length
+        self.fading_type = fading_type  # None = random in SNR generator
 
         # HARQ
         self.harq_max_retransmissions = harq_max_retransmissions
@@ -237,7 +239,8 @@ class SliceRANeMBB:
     def __init__(self, rng, user_counter, id, SLA,
                  CBR_description, VBR_description,
                  state_variables, norm_const, slots_per_step,
-                 slot_length=1e-4, harq_max_retransmissions=10):
+                 slot_length=1e-4, harq_max_retransmissions=10,
+                 ue_profiles=None):
         self.type = 'eMBB'
         self.rng = rng
         self.user_counter = user_counter
@@ -261,7 +264,48 @@ class SliceRANeMBB:
             'burst_size':  VBR_description['b_size'],
             'burst_rate':  VBR_description['b_rate']
         }
+
+        # UE profiles: mobility distribution and traffic mix
+        self._setup_ue_profiles(ue_profiles)
         self.reset()
+
+    def _setup_ue_profiles(self, ue_profiles):
+        """Set up mobility and traffic_mix sampling from ue_profiles dict."""
+        from config_loader import MOBILITY_TO_FADING_INDEX, _DEFAULT_UE_PROFILES
+
+        if ue_profiles is None:
+            ue_profiles = _DEFAULT_UE_PROFILES
+
+        # Mobility: build arrays for np.random.choice
+        mob = ue_profiles.get('mobility', _DEFAULT_UE_PROFILES['mobility'])
+        self._mobility_indices = []
+        self._mobility_weights = []
+        for name, weight in mob.items():
+            if name in MOBILITY_TO_FADING_INDEX:
+                self._mobility_indices.append(MOBILITY_TO_FADING_INDEX[name])
+                self._mobility_weights.append(weight)
+        total = sum(self._mobility_weights)
+        if total > 0:
+            self._mobility_weights = [w / total for w in self._mobility_weights]
+        else:
+            # fallback to uniform
+            self._mobility_indices = [0, 1, 2]
+            self._mobility_weights = [1/3, 1/3, 1/3]
+
+        # Traffic mix: cbr vs vbr probability
+        mix = ue_profiles.get('traffic_mix', _DEFAULT_UE_PROFILES['traffic_mix'])
+        cbr_w = mix.get('cbr', 0.5)
+        vbr_w = mix.get('vbr', 0.5)
+        total = cbr_w + vbr_w
+        self._cbr_fraction = cbr_w / total if total > 0 else 0.5
+
+    def _sample_fading_type(self):
+        """Sample a fading type index from the configured mobility distribution."""
+        return self.rng.choice(self._mobility_indices, p=self._mobility_weights)
+
+    def _sample_traffic_type(self):
+        """Sample whether a new UE should be CBR or VBR based on traffic_mix."""
+        return CBR if self.rng.random() < self._cbr_fraction else VBR
 
     def reset(self):
         self.slot_counter = 0
@@ -297,8 +341,10 @@ class SliceRANeMBB:
             if self.cbr_cac():
                 ue_id = next(self.user_counter)
                 cbr_source = CbrSource(bit_rate=self.cbr_bit_rate)
+                fading = self._sample_fading_type()
                 ue = UE(ue_id, self.id, cbr_source, CBR,
-                        harq_max_retransmissions=self.harq_max_retransmissions)
+                        harq_max_retransmissions=self.harq_max_retransmissions,
+                        fading_type=fading)
                 self.cbr_ues[ue_id] = ue
                 holding_time = self.rng.exponential(self.cbr_mean_time)
                 holding_time = np.rint(holding_time / self.slot_length)
@@ -315,8 +361,10 @@ class SliceRANeMBB:
         if self.vbr_steps_next_arrival == 0:
             ue_id = next(self.user_counter)
             vbr_source = VbrSource(**self.vbr_source_data)
+            fading = self._sample_fading_type()
             ue = UE(ue_id, self.id, vbr_source, VBR,
-                    harq_max_retransmissions=self.harq_max_retransmissions)
+                    harq_max_retransmissions=self.harq_max_retransmissions,
+                    fading_type=fading)
             self.vbr_ues[ue_id] = ue
             holding_time = self.rng.exponential(self.vbr_mean_time)
             holding_time = np.rint(holding_time / self.slot_length)
@@ -453,15 +501,12 @@ class SliceRANeMBB:
         cbr_th    = self.info['cbr_th']    / self.observation_time > self.SLA['cbr_th']
         cbr_queue = self.info['cbr_queue'] / self.slots_per_step   < self.SLA['cbr_queue']
         cbr_delay = self.info['cbr_delay'] / self.slots_per_step   < self.SLA['cbr_delay']
-        cbr_bler  = self.info['cbr_bler']                          < self.SLA.get('cbr_bler', 1.0)
 
         vbr_th    = self.info['vbr_th']    / self.observation_time > self.SLA['vbr_th']
-        vbr_queue = self.info['vbr_queue'] / self.slots_per_step   < self.SLA['vbr_queue']
         vbr_delay = self.info['vbr_delay'] / self.slots_per_step   < self.SLA['vbr_delay']
-        vbr_bler  = self.info['vbr_bler']                          < self.SLA.get('vbr_bler', 1.0)
 
-        cbr_fulfilled = cbr_th or (cbr_queue and cbr_delay)
-        vbr_fulfilled = vbr_th or (vbr_queue and vbr_delay)
+        cbr_fulfilled = cbr_th or  cbr_delay
+        vbr_fulfilled = vbr_th or vbr_delay
 
         return not (cbr_fulfilled and vbr_fulfilled)
 
@@ -482,12 +527,14 @@ class SliceRANURLC(SliceRANeMBB):
     def __init__(self, rng, user_counter, id, SLA,
                  CBR_description, VBR_description,
                  state_variables, norm_const, slots_per_step,
-                 slot_length=1e-4, harq_max_retransmissions=5):
+                 slot_length=1e-4, harq_max_retransmissions=5,
+                 ue_profiles=None):
         super().__init__(rng, user_counter, id, SLA,
                          CBR_description, VBR_description,
                          state_variables, norm_const,
                          slots_per_step, slot_length,
-                         harq_max_retransmissions)
+                         harq_max_retransmissions,
+                         ue_profiles=ue_profiles)
         self.type = 'URLLC'
 
     def update_info(self):
@@ -548,16 +595,12 @@ class SliceRANURLC(SliceRANeMBB):
         no division by slots_per_step.
         """
         cbr_th    = self.info['cbr_th']    / self.observation_time > self.SLA['cbr_th']
-        cbr_queue = self.info['cbr_queue'] / self.slots_per_step   < self.SLA['cbr_queue']
         cbr_delay = self.info['cbr_delay']                         < self.SLA['cbr_delay']
-        cbr_bler  = self.info['cbr_bler']                          < self.SLA.get('cbr_bler', 1.0)
 
         vbr_th    = self.info['vbr_th']    / self.observation_time > self.SLA['vbr_th']
-        vbr_queue = self.info['vbr_queue'] / self.slots_per_step   < self.SLA['vbr_queue']
         vbr_delay = self.info['vbr_delay']                         < self.SLA['vbr_delay']
-        vbr_bler  = self.info['vbr_bler']                          < self.SLA.get('vbr_bler', 1.0)
 
-        cbr_fulfilled = cbr_th or (cbr_queue and cbr_delay and cbr_bler)
-        vbr_fulfilled = vbr_th or (vbr_queue and vbr_delay and vbr_bler)
+        cbr_fulfilled = cbr_th or cbr_delay 
+        vbr_fulfilled = vbr_th or vbr_delay 
 
         return not (cbr_fulfilled and vbr_fulfilled)
