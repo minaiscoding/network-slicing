@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 '''
-Train PPOLag (OmniSafe) with CURRICULUM LEARNING across network-slicing scenarios.
-Trains 20,000 steps per scenario: low -> medium -> congested (60,000 total).
+Train CPO (OmniSafe) with CURRICULUM LEARNING across network-slicing scenarios.
+Trains 5,000 steps per scenario: low → medium → congested (15,000 total).
 Same agent throughout, separate npz files per scenario for plotting.
 
-Enhanced reward function (same as CPO/TD3):
+CPO (Constrained Policy Optimization) is an on-policy projection-based
+algorithm that enforces constraint satisfaction via trust-region updates.
+
+Enhanced reward function (same as TD3):
 1. URLLC: minimize HoL delay (weight 3, highest priority)
 2. eMBB: minimize HoL delay (weight 2) AND maximize throughput (weight 2)
 3. mMTC: minimize delay (weight 1, lowest priority)
 Plus: PRB efficiency bonus and allocation stability penalty
 
 Usage:
-    python experiments_ppo_lag.py
-    python experiments_ppo_lag.py --runs 5 --sequential
-    python experiments_ppo_lag.py --steps-per-scenario 10000
+    python experiments_cpo.py
+    python experiments_cpo.py --runs 5 --sequential
+    python experiments_cpo.py --steps-per-scenario 10000
 '''
 
 import os
@@ -36,11 +39,11 @@ STEPS_PER_SCENARIO  = 20000
 PENALTY             = 1000
 SCENARIOS           = ['low', 'medium', 'congested']
 
-ENV_ID = "RanSlicePPOLag-v0"
+ENV_ID = "RanSliceCPO-v0"
 
 _RNG         = np.random.default_rng(3)
 _PENALTY     = 100.0
-_TOTAL_STEPS = STEPS_PER_SCENARIO * len(SCENARIOS)
+_TOTAL_STEPS = STEPS_PER_SCENARIO * len(SCENARIOS)  # 15,000
 
 _scenario_configs_cache = {}
 
@@ -58,14 +61,14 @@ def get_scenario_config(scenario_name):
 
 @env_register
 @env_unregister
-class RanSliceEnv(CMDP):
+class RanSliceCPOEnv(CMDP):
     """
-    Curriculum Learning PPOLag environment.
+    Curriculum Learning CPO environment.
 
     Training progression:
-    - 20,000 steps on 'low' scenario       -> saves history_{run_id}_low.npz
-    - 20,000 steps on 'medium' scenario     -> saves history_{run_id}_medium.npz
-    - 20,000 steps on 'congested' scenario  -> saves history_{run_id}_congested.npz
+    - 5,000 steps on 'low' scenario       → saves history_{run_id}_low.npz
+    - 5,000 steps on 'medium' scenario     → saves history_{run_id}_medium.npz
+    - 5,000 steps on 'congested' scenario  → saves history_{run_id}_congested.npz
 
     Same agent trained continuously across all scenarios.
     """
@@ -100,7 +103,7 @@ class RanSliceEnv(CMDP):
         cfg     = self.scenario_configs[0]
         raw_env = create_env_from_config(cfg, _RNG, penalty=_PENALTY)
 
-        self._results_path = './results/scenario_comparison/PPOLag/'
+        self._results_path = './results/scenario_comparison/CPO/'
         os.makedirs(self._results_path, exist_ok=True)
 
         if self._is_training_env:
@@ -149,7 +152,7 @@ class RanSliceEnv(CMDP):
 
         self._env.save_results()
         print(f"\n[Run {self._run_id}] Saved {self.scenario_names[self.current_scenario_idx]} "
-              f"results -> history_{self._run_id}_{self.scenario_names[self.current_scenario_idx]}.npz")
+              f"results → history_{self._run_id}_{self.scenario_names[self.current_scenario_idx]}.npz")
 
         self.current_scenario_idx += 1
         if self.current_scenario_idx >= len(self.scenario_names):
@@ -361,11 +364,11 @@ class RanSliceEnv(CMDP):
 
 # ======================================================================== #
 
-class TrainerPPOLag:
-    """Train PPOLag agent with curriculum learning across scenarios."""
+class TrainerCPO:
+    """Train CPO agent with curriculum learning across scenarios."""
 
     def __init__(self):
-        os.makedirs('./results/scenario_comparison/PPOLag/', exist_ok=True)
+        os.makedirs('./results/scenario_comparison/CPO/', exist_ok=True)
 
     def train(self, run_id: int):
         global _CURRENT_RUN_ID, _ENV_INSTANCE_COUNT
@@ -373,14 +376,14 @@ class TrainerPPOLag:
         _ENV_INSTANCE_COUNT[run_id] = 0
 
         print(f'\n{"="*60}')
-        print(f'=== PPOLag CURRICULUM Training Run {run_id} ===')
+        print(f'=== CPO CURRICULUM Training Run {run_id} ===')
         print(f'{"="*60}')
-        print(f'Scenarios : {" -> ".join(SCENARIOS)}')
+        print(f'Scenarios : {" → ".join(SCENARIOS)}')
         print(f'Steps per scenario: {STEPS_PER_SCENARIO}')
         print(f'Total steps: {_TOTAL_STEPS}')
         print(f'Output files:')
         for s in SCENARIOS:
-            print(f'  - results/scenario_comparison/PPOLag/history_{run_id}_{s}.npz')
+            print(f'  - results/scenario_comparison/CPO/history_{run_id}_{s}.npz')
 
         custom_cfgs = {
             "train_cfgs": {
@@ -388,15 +391,18 @@ class TrainerPPOLag:
                 "device": "cuda:0",
             },
             "algo_cfgs": {
-                "steps_per_epoch": 2000,
+                "steps_per_epoch": 1000,
                 "update_iters": 10,
                 "batch_size": 128,
                 "target_kl": 0.02,
                 "entropy_coef": 0.01,
+                "cost_limit": 25.0,
                 "gamma": 0.99,
                 "cost_gamma": 0.99,
                 "lam": 0.95,
                 "lam_c": 0.95,
+                "cg_damping": 0.1,
+                "cg_iters": 15,
                 "use_cost": True,
             },
             "model_cfgs": {
@@ -410,7 +416,7 @@ class TrainerPPOLag:
         }
 
         agent = omnisafe.Agent(
-            algo="PPO",
+            algo="CPO",
             env_id=ENV_ID,
             custom_cfgs=custom_cfgs,
         )
@@ -427,7 +433,7 @@ class TrainerPPOLag:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description="Train PPOLag with curriculum learning on RAN slicing"
+        description="Train CPO with curriculum learning on RAN slicing"
     )
     parser.add_argument("--runs", type=int, default=RUNS)
     parser.add_argument("--processes", type=int, default=PROCESSES)
@@ -439,7 +445,7 @@ if __name__ == '__main__':
         STEPS_PER_SCENARIO = args.steps_per_scenario
         _TOTAL_STEPS = STEPS_PER_SCENARIO * len(SCENARIOS)
 
-    trainer = TrainerPPOLag()
+    trainer = TrainerCPO()
     run_list = list(range(args.runs))
 
     if args.sequential:

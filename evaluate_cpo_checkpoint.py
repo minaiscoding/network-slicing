@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate a trained PPOLag checkpoint across low / medium / congested scenarios.
+"""Evaluate a trained CPO checkpoint across low / medium / congested scenarios.
 
 Generates per-scenario plots:
   1. Cumulative SLA violations per slice (eMBB, mMTC, URLLC)
@@ -9,8 +9,8 @@ Generates per-scenario plots:
 Plus an overall scenario comparison summary plot.
 
 Example:
-  python evaluate_ppolag_checkpoint.py \
-    --checkpoint runs/PPOLag-{RanSlicePPOLag-v0}/seed-000-.../torch_save/epoch-10.pt \
+  python evaluate_cpo_checkpoint.py \
+    --checkpoint runs/CPO-{RanSliceCPO-v0}/seed-000-.../torch_save/epoch-10.pt \
     --epochs 5 --steps-per-epoch 1000
 """
 
@@ -27,7 +27,7 @@ import numpy as np
 import torch
 import omnisafe
 
-import experiments_ppo_lag as train_exp
+import experiments_cpo as train_exp
 from config_loader import load_scenarios
 from scenario_creator import create_env_from_config
 from wrapper import ReportWrapper
@@ -53,7 +53,7 @@ def load_checkpoint_into_agent(agent: omnisafe.Agent, checkpoint_path: str) -> N
 
 def make_wrapped_env(cfg, seed: int, penalty: float, total_steps: int):
     """Build a ReportWrapper-wrapped env from a ScenarioConfig."""
-    path = f"./results/{cfg.name}/PPOLag_eval/"
+    path = f"./results/{cfg.name}/CPO_eval/"
     os.makedirs(path, exist_ok=True)
     rng     = np.random.default_rng(seed)
     raw_env = create_env_from_config(cfg, rng, penalty=penalty)
@@ -77,7 +77,7 @@ class ScenarioResult:
 
 
 def _compute_observation(info: dict, n_slices: int, n_prbs: int) -> np.ndarray:
-    """Replicate the 12-dim observation used during PPOLag training."""
+    """Replicate the 12-dim observation used during CPO training."""
     obs_size = n_slices * 4
     obs = np.zeros(obs_size, dtype=float)
     l1_info     = info.get('l1_info', [])
@@ -210,7 +210,7 @@ def save_per_scenario_plots(
 
     # ── Cumulative violations + PRB allocation ──
     fig, axes = plt.subplots(1, 2, figsize=(16, 5), constrained_layout=True)
-    fig.suptitle(f"PPOLag — Scenario: {result.name.upper()}", fontsize=14, fontweight="bold")
+    fig.suptitle(f"CPO — Scenario: {result.name.upper()}", fontsize=14, fontweight="bold")
 
     for ax in axes:
         for b in epoch_boundaries:
@@ -234,14 +234,14 @@ def save_per_scenario_plots(
     ax.set_ylabel("PRBs")
     ax.legend(fontsize=10)
 
-    fname = os.path.join(out_dir, f"{result.name}_sla_and_resources_ppolag.png")
+    fname = os.path.join(out_dir, f"{result.name}_sla_and_resources.png")
     fig.savefig(fname, dpi=150)
     plt.close(fig)
     print(f"  Saved: {os.path.abspath(fname)}")
 
     # ── Violation rate ──
     fig, ax = plt.subplots(figsize=(10, 5), constrained_layout=True)
-    ax.set_title(f"PPOLag SLA Violation Rate — {result.name.upper()}", fontsize=13)
+    ax.set_title(f"CPO SLA Violation Rate — {result.name.upper()}", fontsize=13)
     for s_idx in range(n_slices):
         rate = _smooth(result.violation_per_slice[:total_steps, s_idx].astype(float), SMOOTH_WINDOW)
         ax.plot(x, rate, label=labels[s_idx], color=colors[s_idx], linewidth=1.4)
@@ -252,7 +252,7 @@ def save_per_scenario_plots(
     ax.legend(fontsize=10)
     ax.grid(alpha=0.25)
 
-    fname = os.path.join(out_dir, f"{result.name}_violation_rate_ppolag.png")
+    fname = os.path.join(out_dir, f"{result.name}_violation_rate.png")
     fig.savefig(fname, dpi=150)
     plt.close(fig)
     print(f"  Saved: {os.path.abspath(fname)}")
@@ -271,7 +271,7 @@ def save_summary_plot(
     epoch_boundaries = [i * steps_per_epoch for i in range(1, epochs)]
 
     fig, axes = plt.subplots(1, 3, figsize=(20, 5), constrained_layout=True)
-    fig.suptitle("PPOLag Evaluation — Scenario Comparison", fontsize=14, fontweight="bold")
+    fig.suptitle("CPO Evaluation — Scenario Comparison", fontsize=14, fontweight="bold")
 
     for ax in axes:
         for b in epoch_boundaries:
@@ -308,17 +308,17 @@ def save_summary_plot(
     ax.set_ylabel("Cumulative violations")
     ax.legend(fontsize=9)
 
-    fname = os.path.join(out_dir, "scenario_comparison_ppolag.png")
+    fname = os.path.join(out_dir, "scenario_comparison_cpo.png")
     fig.savefig(fname, dpi=150)
     plt.close(fig)
     print(f"\nSaved: {os.path.abspath(fname)}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate PPOLag checkpoint across scenarios")
+    parser = argparse.ArgumentParser(description="Evaluate CPO checkpoint across scenarios")
     parser.add_argument(
         "--checkpoint", type=str, required=True,
-        help="Path to PPOLag checkpoint (.pt file)"
+        help="Path to CPO checkpoint (.pt file)"
     )
     parser.add_argument("--seed",            type=int,   default=3)
     parser.add_argument("--epochs",          type=int,   default=5)
@@ -345,6 +345,11 @@ def main() -> None:
         },
         "algo_cfgs": {
             "steps_per_epoch": max(args.steps_per_epoch, 1),
+            "update_iters": 10,
+            "batch_size": 128,
+            "target_kl": 0.02,
+            "cost_limit": 25.0,
+            "use_cost": True,
         },
         "logger_cfgs": {
             "use_wandb": False,
@@ -352,8 +357,8 @@ def main() -> None:
         },
     }
 
-    print("Initializing PPOLag agent from checkpoint...")
-    agent = omnisafe.Agent(algo="PPOLag", env_id=train_exp.ENV_ID, custom_cfgs=custom_cfgs)
+    print("Initializing CPO agent from checkpoint...")
+    agent = omnisafe.Agent(algo="CPO", env_id=train_exp.ENV_ID, custom_cfgs=custom_cfgs)
     load_checkpoint_into_agent(agent, checkpoint_path)
     print("Agent initialized. Starting evaluation...\n")
 
@@ -385,7 +390,7 @@ def main() -> None:
     )
 
     # Summary table
-    print("\n=== PPOLag Evaluation Summary ===")
+    print("\n=== CPO Evaluation Summary ===")
     header = f"{'Scenario':12} | {'Slice':6} | {'Violations':>10} | {'Avg PRBs':>9}"
     print(header)
     print("-" * len(header))

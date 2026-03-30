@@ -8,19 +8,19 @@ scenarios:
         count: 1
         ue_profiles:
           mobility:
-            pedestrian: 0.6
+            pedestrian: 0.7
             urban: 0.3
-            vehicular: 0.1
+            vehicular: 0
           traffic_mix:
             cbr: 0.7
             vbr: 0.3
         cbr:
-          lambda: 0.6
+          lambda: 0.4
           t_mean: 50.0
           bit_rate: 10800000
           packet_size: 1500
         vbr:
-          lambda: 0.6
+          lambda: 0.4
           t_mean: 50.0
           p_size: 2000
           b_size: 500
@@ -67,10 +67,10 @@ scenarios:
         sla:
           cbr_th: 200000.0
           cbr_queue: 50000.0
-          cbr_delay: 500.0
+          cbr_delay: 100.0
           vbr_th: 100000.0
           vbr_queue: 100000.0
-          vbr_delay: 500.0
+          vbr_delay: 100.0
 
 
   - name: medium
@@ -140,10 +140,10 @@ scenarios:
         sla:
           cbr_th: 500000.0
           cbr_queue: 50000.0
-          cbr_delay: 200.0
+          cbr_delay: 100.0
           vbr_th: 200000.0
           vbr_queue: 100000.0
-          vbr_delay: 200.0
+          vbr_delay: 100.0
 
 
   - name: congested
@@ -175,10 +175,10 @@ scenarios:
         sla:
           cbr_th: 200000000.0
           cbr_queue: 200000.0
-          cbr_delay: 300.0
+          cbr_delay: 500.0
           vbr_th: 200000000.0
           vbr_queue: 200000.0
-          vbr_delay: 300.0
+          vbr_delay: 500.0
 
       mmtc:
         count: 1
