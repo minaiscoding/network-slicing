@@ -31,40 +31,22 @@ _TOTAL_STEPS = 200 * 1000
 
   
 @env_register
-@env_unregister
 class RanSliceEnv(CMDP):
 
     _support_envs: ClassVar[list[str]] = [ENV_ID]
-    need_auto_reset_wrapper  = False
-    need_time_limit_wrapper  = True
-    _num_envs                = 1
+    need_auto_reset_wrapper  = True
+    need_time_limit_wrapper  = False
+    _num_envs                = 1          # ← required by OmniSafe AutoReset
 
     def __init__(self, env_id: str, **kwargs) -> None:
         super().__init__(env_id)
-        raw_env = create_env(_RNG, _SCEN, penalty=_PENALTY)
-        self._env = ReportWrapper(
-            raw_env,
-            steps=_TOTAL_STEPS,
-            control_steps=500,
-            env_id=1,
-            path='./results/scenario_0/PPOLag/',
-            verbose=False,
-            n_slices=raw_env.n_slices,
-            n_prbs=raw_env.n_prbs,
-            n_variables=raw_env.n_variables
-        )
+        self._env = create_env(_RNG, _SCEN, penalty=_PENALTY)
+        self._n_prbs            = 200     # total PRBs to distribute
+        self._action_space      = spaces.Box(low=0.0, high=1.0, shape=(5,), dtype=np.float32)
+        self._observation_space = self._env.observation_space
 
-        self._max_episode_steps = 500
-        self._n_prbs            = self._env.n_prbs  # Read from environment, not hard-coded
-        self._step_count        = 0  # track steps for forced truncation
-        self._action_space      = spaces.Box(low=0.0, high=1.0, shape=(self._env.n_slices + 1,), dtype=float)
-        self._observation_space = spaces.Box(
-            low=-1, high=1,
-            shape=(self._env.n_variables,), dtype=float
-        )
-
+    # ── reset ─────────────────────────────────────────────────────────────────
     def reset(self, seed=None, options=None):
-        self._step_count = 0
         result = self._env.reset()
         if isinstance(result, tuple):
             obs, info = result
@@ -72,21 +54,18 @@ class RanSliceEnv(CMDP):
             obs, info = result, {}
         return torch.as_tensor(obs, dtype=torch.float32), info
 
+    # ── step ──────────────────────────────────────────────────────────────────
     def step(self, action: torch.Tensor):
+        # Convert continuous [0,1] action from OmniSafe → integer PRBs
         act = action.cpu().numpy()
         act = np.abs(act)
-    
-        # Normalize to sum to 1
-        total = act.sum()
-        if total > 0:
-            act = act / total
-        # Now act sums to exactly 1.0, split into 5 alloc + 1 excess
-        alloc = act[:self._env.n_slices]   # sums to < 1.0
-        excess = act[self._env.n_slices]   # saved budget, added to reward
+        t_action = act.sum() or 1.0
+        act = np.array(
+            [int(np.floor(self._n_prbs * act[i] / t_action)) for i in range(len(act))],
+            dtype=int,
+        )
 
-        alloc_prbs = np.array([int(np.floor(a * self._n_prbs)) for a in alloc], dtype=int)
-        result = self._env.step(alloc_prbs)
-
+        result = self._env.step(act)
 
         if len(result) == 4:
             obs, reward, done, info = result
@@ -95,41 +74,17 @@ class RanSliceEnv(CMDP):
             obs, reward, terminated, truncated, info = result
             terminated, truncated = bool(terminated), bool(truncated)
 
-        
-        cost = 0.0
-
-        self._step_count += 1
-        if self._step_count >= self._max_episode_steps:
-            truncated = True
-            self._step_count = 0
-
-        if isinstance(info, dict):
-            info = {str(k): v for k, v in info.items()}
-        else:
-            info = {}
-        if terminated or truncated:
-    # Save final obs before reset
-            final_obs = torch.as_tensor(obs, dtype=torch.float32)
-    
-    # Reset and get new obs
-            new_obs, _ = self._env.reset()
-            obs = torch.as_tensor(new_obs, dtype=torch.float32)
-    
-    # OmniSafe requires this
-            info["final_observation"] = final_obs
-        else:
-            obs = torch.as_tensor(obs, dtype=torch.float32)
-            info["final_observation"] = obs
+        cost = float(reward < 0)
 
         return (
-            obs,
-            obs,
+            torch.as_tensor(obs,        dtype=torch.float32),
             torch.as_tensor(reward,     dtype=torch.float32),
             torch.as_tensor(cost,       dtype=torch.float32),
             torch.as_tensor(terminated, dtype=torch.bool),
             torch.as_tensor(truncated,  dtype=torch.bool),
             info,
         )
+
     def render(self, *args, **kwargs):
         if hasattr(self._env, "render"):
             return self._env.render()
@@ -143,11 +98,6 @@ class RanSliceEnv(CMDP):
 
     def close(self) -> None:
         self._env.close()
-
-    @property
-    def max_episode_steps(self) -> int:
-        return self._max_episode_steps  # 500, was wrongly returning 1 before
-
 
 def build_custom_cfgs(epochs: int, steps_per_epoch: int, device: str) -> dict:
     return {

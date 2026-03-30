@@ -1,0 +1,172 @@
+scenarios:
+
+  # ---------------------------------------------------------------------------
+  - name: low
+    n_prbs: 100
+    slices:
+
+      embb:
+        count: 1
+        cbr:
+          lambda: 0.2
+          t_mean: 40.0
+          bit_rate: 1000000
+          packet_size: 1500
+        vbr:
+          lambda: 0.3
+          t_mean: 40.0
+          p_size: 500
+          b_size: 500
+          b_rate: 0.01
+          packet_size: 500
+        sla:
+          cbr_th: 10000000.0
+          cbr_queue: 100000.0
+          cbr_delay: 10.0
+          vbr_th: 15000000.0
+          vbr_queue: 150000.0
+          vbr_delay: 500.0
+
+      mmtc:
+        count: 1
+        n_devices: 1000
+        repetition_set: [2, 4, 8]
+        period_set: [20000, 50000, 100000]
+        sla:
+          delay: 300.0
+
+      urllc:
+        count: 1
+        cbr:
+          lambda: 0.1
+          t_mean: 20.0
+          bit_rate: 200000
+          packet_size: 1500
+        vbr:
+          lambda: 0.2
+          t_mean: 20.0
+          p_size: 200
+          b_size: 200
+          b_rate: 0.005
+          packet_size: 200
+        sla:
+          cbr_th: 10000000.0
+          cbr_queue: 50000.0
+          cbr_delay: 50.0
+          vbr_th: 15000000.0
+          vbr_queue: 100000.0
+          vbr_delay: 50.0
+
+  # ---------------------------------------------------------------------------
+  - name: medium
+    n_prbs: 100
+    slices:
+
+      embb:
+        count: 1
+        cbr:
+          lambda: 0.6
+          t_mean: 60.0
+          bit_rate: 2000000
+          packet_size: 1500
+        vbr:
+          lambda: 0.8
+          t_mean: 60.0
+          p_size: 1000
+          b_size: 1000
+          b_rate: 0.02
+          packet_size: 500
+        sla:
+          cbr_th: 10000000.0
+          cbr_queue: 100000.0
+          cbr_delay: 10.0
+          vbr_th: 15000000.0
+          vbr_queue: 150000.0
+          vbr_delay: 100.0
+
+      mmtc:
+        count: 1
+        n_devices: 3000
+        repetition_set: [2, 4, 8, 16, 32, 64, 128]
+        period_set: [1000, 5000, 10000, 15000, 20000, 25000, 50000, 100000]
+        sla:
+          delay: 300.0
+
+      urllc:
+        count: 1
+        cbr:
+          lambda: 0.3
+          t_mean: 30.0
+          bit_rate: 300000
+          packet_size: 1500
+        vbr:
+          lambda: 0.5
+          t_mean: 30.0
+          p_size: 300
+          b_size: 300
+          b_rate: 0.01
+          packet_size: 300
+        sla:
+          cbr_th: 10000000.0
+          cbr_queue: 50000.0
+          cbr_delay: 50.0
+          vbr_th: 15000000.0
+          vbr_queue: 100000.0
+          vbr_delay: 5.0
+
+  # ---------------------------------------------------------------------------
+  - name: congested
+    n_prbs: 100
+    slices:
+
+      embb:
+        count: 1
+        cbr:
+          lambda: 1.2
+          t_mean: 80.0
+          bit_rate: 3000000
+          packet_size: 1500
+        vbr:
+          lambda: 1.5
+          t_mean: 80.0
+          p_size: 1000
+          b_size: 1500
+          b_rate: 0.05
+          packet_size: 500
+        sla:
+          cbr_th: 10000000.0
+          cbr_queue: 100000.0
+          cbr_delay: 10.0
+          vbr_th: 15000000.0
+          vbr_queue: 150000.0
+          vbr_delay: 100.0
+
+      mmtc:
+        count: 1
+        n_devices: 8000
+        repetition_set: [2, 4, 8, 16, 32, 64, 128]
+        period_set: [1000, 5000, 10000, 15000, 20000, 25000, 50000, 100000]
+        sla:
+          delay: 300.0
+
+      urllc:
+        count: 1
+        cbr:
+          lambda: 0.6
+          t_mean: 40.0
+          bit_rate: 500000
+          packet_size: 1500
+        vbr:
+          lambda: 1.0
+          t_mean: 40.0
+          p_size: 500
+          b_size: 500
+          b_rate: 0.02
+          packet_size: 500
+        sla:
+          cbr_th: 10000000.0
+          cbr_queue: 50000.0
+          cbr_delay: 50.0
+          vbr_th: 15000000.0
+          vbr_queue: 100000.0
+          vbr_delay: 50.0
