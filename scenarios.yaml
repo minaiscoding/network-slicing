@@ -93,7 +93,7 @@ scenarios:
           bit_rate: 14000000
           packet_size: 1500
         vbr:
-          lambda: 0.9
+          lambda: 0.8
           t_mean: 50.0
           p_size: 1800
           b_size: 600
@@ -119,24 +119,24 @@ scenarios:
         count: 1
         ue_profiles:
           mobility:
-            pedestrian: 0.2
+            pedestrian: 0.3
             urban: 0.5
-            vehicular: 0.3
+            vehicular: 0.2
           traffic_mix:
-            cbr: 0.7
-            vbr: 0.3
+            cbr: 0.6
+            vbr: 0.4
         cbr:
-          lambda: 0.5
-          t_mean: 40.0
-          bit_rate: 8000000
+          lambda: 0.9
+          t_mean: 50.0
+          bit_rate: 14000000
           packet_size: 1500
         vbr:
-          lambda: 0.3
-          t_mean: 40.0
-          p_size: 800
-          b_size: 400
+          lambda: 0.8
+          t_mean: 50.0
+          p_size: 1800
+          b_size: 600
           b_rate: 0.06
-          packet_size: 500
+          packet_size: 1000
         sla:
           cbr_th: 500000.0
           cbr_queue: 50000.0
@@ -166,7 +166,7 @@ scenarios:
           bit_rate: 18900000
           packet_size: 1500
         vbr:
-          lambda: 1.2
+          lambda: 1.0
           t_mean: 80.0
           p_size: 3000
           b_size: 1500
@@ -192,24 +192,24 @@ scenarios:
         count: 1
         ue_profiles:
           mobility:
-            pedestrian: 0.1
+            pedestrian: 0.2
             urban: 0.4
-            vehicular: 0.5
+            vehicular: 0.4
           traffic_mix:
-            cbr: 0.6
-            vbr: 0.4
+            cbr: 0.5
+            vbr: 0.5
         cbr:
           lambda: 1.2
-          t_mean: 40.0
-          bit_rate: 12000000
+          t_mean: 80.0
+          bit_rate: 18900000
           packet_size: 1500
         vbr:
           lambda: 1.0
-          t_mean: 40.0
-          p_size: 1000
-          b_size: 500
+          t_mean: 80.0
+          p_size: 3000
+          b_size: 1500
           b_rate: 0.1
-          packet_size: 500
+          packet_size: 1000
         sla:
           cbr_th: 10000000.0
           cbr_queue: 50000.0

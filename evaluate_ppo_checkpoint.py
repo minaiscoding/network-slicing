@@ -27,7 +27,7 @@ import numpy as np
 import torch
 import omnisafe
 
-import experiments_ppo_lag as train_exp
+import experiments_ppo as train_exp
 from config_loader import load_scenarios
 from scenario_creator import create_env_from_config
 from wrapper import ReportWrapper

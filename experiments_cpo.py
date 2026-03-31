@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 '''
-Train CPO (OmniSafe) with CURRICULUM LEARNING across network-slicing scenarios.
-Trains 5,000 steps per scenario: low → medium → congested (15,000 total).
-Same agent throughout, separate npz files per scenario for plotting.
+Train CPO (OmniSafe) with CYCLING CURRICULUM across network-slicing scenarios.
+Cycles through low → medium → congested → low → ... with 20k steps per block.
+Total 500k steps. Single NPZ file per run recording all metrics.
 
 CPO (Constrained Policy Optimization) is an on-policy projection-based
 algorithm that enforces constraint satisfaction via trust-region updates.
@@ -36,6 +36,7 @@ from scenario_creator import create_env_from_config
 RUNS                = 30
 PROCESSES           = 4
 STEPS_PER_SCENARIO  = 20000
+TOTAL_STEPS         = 500000
 PENALTY             = 1000
 SCENARIOS           = ['low', 'medium', 'congested']
 
@@ -43,7 +44,7 @@ ENV_ID = "RanSliceCPO-v0"
 
 _RNG         = np.random.default_rng(3)
 _PENALTY     = 100.0
-_TOTAL_STEPS = STEPS_PER_SCENARIO * len(SCENARIOS)  # 15,000
+_TOTAL_STEPS = TOTAL_STEPS
 
 _scenario_configs_cache = {}
 
@@ -63,14 +64,11 @@ def get_scenario_config(scenario_name):
 @env_unregister
 class RanSliceCPOEnv(CMDP):
     """
-    Curriculum Learning CPO environment.
+    Cycling Curriculum CPO environment.
 
-    Training progression:
-    - 5,000 steps on 'low' scenario       → saves history_{run_id}_low.npz
-    - 5,000 steps on 'medium' scenario     → saves history_{run_id}_medium.npz
-    - 5,000 steps on 'congested' scenario  → saves history_{run_id}_congested.npz
-
-    Same agent trained continuously across all scenarios.
+    Cycles through scenarios (low → medium → congested → low → ...)
+    with STEPS_PER_SCENARIO steps per block. Single NPZ file per run.
+    Total: 500k steps, recording reward/cost/violations/resources.
     """
 
     _support_envs: ClassVar[list[str]] = [ENV_ID]
@@ -103,15 +101,15 @@ class RanSliceCPOEnv(CMDP):
         cfg     = self.scenario_configs[0]
         raw_env = create_env_from_config(cfg, _RNG, penalty=_PENALTY)
 
-        self._results_path = './results/scenario_comparison/CPO/'
+        self._results_path = './results/500k/CPO/'
         os.makedirs(self._results_path, exist_ok=True)
 
         if self._is_training_env:
             self._env = ReportWrapper(
                 raw_env,
-                steps         = STEPS_PER_SCENARIO,
-                control_steps = 500,
-                env_id        = f"{self._run_id}_{self.scenario_names[0]}",
+                steps         = _TOTAL_STEPS,
+                control_steps = 5000,
+                env_id        = str(self._run_id),
                 path          = self._results_path,
                 verbose       = False,
                 continuous_mode = True,
@@ -119,8 +117,8 @@ class RanSliceCPOEnv(CMDP):
         else:
             self._env = ReportWrapper(
                 raw_env,
-                steps         = STEPS_PER_SCENARIO,
-                control_steps = STEPS_PER_SCENARIO + 1,
+                steps         = _TOTAL_STEPS,
+                control_steps = _TOTAL_STEPS + 1,
                 env_id        = f"{self._run_id}_eval",
                 path          = self._results_path,
                 verbose       = False,
@@ -144,42 +142,28 @@ class RanSliceCPOEnv(CMDP):
         )
 
         self._last_allocation = np.zeros(self._n_slices, dtype=float)
+        self._steps_in_current_scenario = 0
 
     def _switch_scenario(self):
-        """Switch to next scenario in curriculum."""
+        """Cycle to next scenario (low → medium → congested → low → ...)."""
         if not self._is_training_env:
             return
 
-        self._env.save_results()
-        print(f"\n[Run {self._run_id}] Saved {self.scenario_names[self.current_scenario_idx]} "
-              f"results → history_{self._run_id}_{self.scenario_names[self.current_scenario_idx]}.npz")
-
-        self.current_scenario_idx += 1
-        if self.current_scenario_idx >= len(self.scenario_names):
-            print(f"[Run {self._run_id}] All scenarios completed!")
-            return
-
+        self.current_scenario_idx = (self.current_scenario_idx + 1) % len(self.scenario_names)
         scenario_name = self.scenario_names[self.current_scenario_idx]
         cfg = self.scenario_configs[self.current_scenario_idx]
 
-        print(f"\n[Run {self._run_id}] === CURRICULUM: Switching to {scenario_name.upper()} ===")
+        print(f"\n[Run {self._run_id}] === CYCLING to {scenario_name.upper()} "
+              f"(global step {self._global_step_count}) ===")
 
         if hasattr(self._env, 'env') and hasattr(self._env.env, 'close'):
             self._env.env.close()
 
         new_raw = create_env_from_config(cfg, _RNG, penalty=_PENALTY)
-
-        self._env = ReportWrapper(
-            new_raw,
-            steps         = STEPS_PER_SCENARIO,
-            control_steps = 500,
-            env_id        = f"{self._run_id}_{scenario_name}",
-            path          = self._results_path,
-            verbose       = False,
-            continuous_mode = True,
-        )
+        self._env.env = new_raw
 
         self._n_prbs = cfg.n_prbs
+        self._steps_in_current_scenario = 0
         self._step_count = 0
 
     def reset(self, seed=None, options=None):
@@ -262,21 +246,20 @@ class RanSliceCPOEnv(CMDP):
         self._step_count += 1
         self._global_step_count += 1
 
-        # Check if it's time to switch scenarios
-        steps_in_scenario = self._env.step_counter
-        if self._is_training_env and steps_in_scenario >= STEPS_PER_SCENARIO:
-            if self.current_scenario_idx < len(self.scenario_names) - 1:
-                self._switch_scenario()
-                new_obs_raw, new_info = self._env.reset()
-                obs = self._compute_observation(new_info)
-                return (
-                    torch.as_tensor(obs, dtype=torch.float32),
-                    torch.as_tensor(reward, dtype=torch.float32),
-                    torch.as_tensor(cost, dtype=torch.float32),
-                    torch.as_tensor(False, dtype=torch.bool),
-                    torch.as_tensor(True, dtype=torch.bool),
-                    {"final_observation": torch.as_tensor(obs, dtype=torch.float32)},
-                )
+        # Check if it's time to cycle to next scenario
+        self._steps_in_current_scenario += 1
+        if self._is_training_env and self._steps_in_current_scenario >= STEPS_PER_SCENARIO:
+            self._switch_scenario()
+            new_obs_raw, new_info = self._env.reset()
+            obs = self._compute_observation(new_info)
+            return (
+                torch.as_tensor(obs, dtype=torch.float32),
+                torch.as_tensor(reward, dtype=torch.float32),
+                torch.as_tensor(cost, dtype=torch.float32),
+                torch.as_tensor(False, dtype=torch.bool),
+                torch.as_tensor(True, dtype=torch.bool),
+                {"final_observation": torch.as_tensor(obs, dtype=torch.float32)},
+            )
 
         if self._step_count >= self._max_episode_steps:
             truncated = True
@@ -365,10 +348,10 @@ class RanSliceCPOEnv(CMDP):
 # ======================================================================== #
 
 class TrainerCPO:
-    """Train CPO agent with curriculum learning across scenarios."""
+    """Train CPO agent with cycling curriculum learning."""
 
     def __init__(self):
-        os.makedirs('./results/scenario_comparison/CPO/', exist_ok=True)
+        os.makedirs('./results/500k/CPO/', exist_ok=True)
 
     def train(self, run_id: int):
         global _CURRENT_RUN_ID, _ENV_INSTANCE_COUNT
@@ -376,14 +359,12 @@ class TrainerCPO:
         _ENV_INSTANCE_COUNT[run_id] = 0
 
         print(f'\n{"="*60}')
-        print(f'=== CPO CURRICULUM Training Run {run_id} ===')
+        print(f'=== CPO CYCLING CURRICULUM Training Run {run_id} ===')
         print(f'{"="*60}')
-        print(f'Scenarios : {" → ".join(SCENARIOS)}')
-        print(f'Steps per scenario: {STEPS_PER_SCENARIO}')
+        print(f'Scenarios cycle: {" → ".join(SCENARIOS)} → ... (repeating)')
+        print(f'Steps per scenario block: {STEPS_PER_SCENARIO}')
         print(f'Total steps: {_TOTAL_STEPS}')
-        print(f'Output files:')
-        for s in SCENARIOS:
-            print(f'  - results/scenario_comparison/CPO/history_{run_id}_{s}.npz')
+        print(f'Output: results/500k/CPO/history_{run_id}.npz')
 
         custom_cfgs = {
             "train_cfgs": {
@@ -439,11 +420,12 @@ if __name__ == '__main__':
     parser.add_argument("--processes", type=int, default=PROCESSES)
     parser.add_argument("--sequential", action="store_true")
     parser.add_argument("--steps-per-scenario", type=int, default=STEPS_PER_SCENARIO)
+    parser.add_argument("--total-steps", type=int, default=TOTAL_STEPS,
+                        help="Total training steps (default: 500000)")
     args = parser.parse_args()
 
-    if args.steps_per_scenario != STEPS_PER_SCENARIO:
-        STEPS_PER_SCENARIO = args.steps_per_scenario
-        _TOTAL_STEPS = STEPS_PER_SCENARIO * len(SCENARIOS)
+    STEPS_PER_SCENARIO = args.steps_per_scenario
+    _TOTAL_STEPS = args.total_steps
 
     trainer = TrainerCPO()
     run_list = list(range(args.runs))
