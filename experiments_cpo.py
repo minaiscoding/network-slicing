@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 '''
-Train CPO (OmniSafe) with CYCLING CURRICULUM across network-slicing scenarios.
-Cycles through low → medium → congested → low → ... with 20k steps per block.
-Total 500k steps. Single NPZ file per run recording all metrics.
+Train CPO (OmniSafe) with SEQUENTIAL CURRICULUM across network-slicing scenarios.
+Trains low (250k) then medium (500k) then congested (250k), one pass.
+Total 1M steps. Single NPZ file per run recording all metrics.
 
 CPO (Constrained Policy Optimization) is an on-policy projection-based
 algorithm that enforces constraint satisfaction via trust-region updates.
@@ -35,12 +35,12 @@ from scenario_creator import create_env_from_config
 
 RUNS                = 30
 PROCESSES           = 4
-STEPS_PER_SCENARIO  = 20000
-TOTAL_STEPS         = 500000
+TOTAL_STEPS         = 1000000
 PENALTY             = 1000
 SCENARIOS           = ['low', 'medium', 'congested']
+STEPS_PER_SCENARIO  = [250000, 500000, 250000]   # low, medium, congested
 
-ENV_ID = "RanSliceCPO-v0"
+ENV_ID = "RanSliceCPO-v1"
 
 _RNG         = np.random.default_rng(3)
 _PENALTY     = 100.0
@@ -144,12 +144,24 @@ class RanSliceCPOEnv(CMDP):
         self._last_allocation = np.zeros(self._n_slices, dtype=float)
         self._steps_in_current_scenario = 0
 
+        # Emergency excess redistribution: track consecutive violations per slice
+        # Priority: URLLC (slice 2) = 3, eMBB (slice 0) = 2, mMTC (slice 1) = 1
+        self._consecutive_violations = np.zeros(self._n_slices, dtype=int)
+        self._slice_priority = np.zeros(self._n_slices, dtype=int)
+        self._slice_priority[0] = 2   # eMBB
+        self._slice_priority[1] = 1   # mMTC
+        self._slice_priority[2] = 3   # URLLC
+        self._VIOLATION_THRESHOLD = 3
+
     def _switch_scenario(self):
-        """Cycle to next scenario (low → medium → congested → low → ...)."""
+        """Advance to next scenario (low → medium → congested, one pass)."""
         if not self._is_training_env:
             return
 
-        self.current_scenario_idx = (self.current_scenario_idx + 1) % len(self.scenario_names)
+        next_idx = self.current_scenario_idx + 1
+        if next_idx >= len(self.scenario_names):
+            return  # all scenarios done, stay on last
+        self.current_scenario_idx = next_idx
         scenario_name = self.scenario_names[self.current_scenario_idx]
         cfg = self.scenario_configs[self.current_scenario_idx]
 
@@ -231,6 +243,20 @@ class RanSliceCPOEnv(CMDP):
         alloc_prbs = np.array(
             [int(np.floor(a * self._n_prbs)) for a in alloc], dtype=int
         )
+
+        # ── Emergency excess redistribution ──
+        # If any slice has been violating for 3+ consecutive steps,
+        # give all remaining PRBs to the highest-priority violating slice.
+        excess_prbs = self._n_prbs - alloc_prbs.sum()
+        if excess_prbs > 0:
+            # Find slices in emergency (consecutive violations >= threshold)
+            emergency_mask = self._consecutive_violations >= self._VIOLATION_THRESHOLD
+            if emergency_mask.any():
+                # Pick the highest-priority emergency slice
+                emergency_priorities = self._slice_priority * emergency_mask
+                winner = int(np.argmax(emergency_priorities))
+                alloc_prbs[winner] += excess_prbs
+
         result = self._env.step(alloc_prbs)
 
         if len(result) == 4:
@@ -243,12 +269,24 @@ class RanSliceCPOEnv(CMDP):
         cost   = float(info.get("cost", 0.0))
         reward = self._compute_custom_reward(alloc_prbs, excess, info)
 
+        # ── Update consecutive violation counters per slice ──
+        per_slice_viol = info.get('violations', np.zeros(self._n_slices, dtype=int))
+        if hasattr(per_slice_viol, '__len__') and len(per_slice_viol) == self._n_slices:
+            for s in range(self._n_slices):
+                if per_slice_viol[s] > 0:
+                    self._consecutive_violations[s] += 1
+                else:
+                    self._consecutive_violations[s] = 0
+        else:
+            self._consecutive_violations[:] = 0
+
         self._step_count += 1
         self._global_step_count += 1
 
-        # Check if it's time to cycle to next scenario
+        # Check if it's time to advance to next scenario
         self._steps_in_current_scenario += 1
-        if self._is_training_env and self._steps_in_current_scenario >= STEPS_PER_SCENARIO:
+        scenario_budget = STEPS_PER_SCENARIO[self.current_scenario_idx]
+        if self._is_training_env and self._steps_in_current_scenario >= scenario_budget:
             self._switch_scenario()
             new_obs_raw, new_info = self._env.reset()
             obs = self._compute_observation(new_info)
@@ -301,19 +339,19 @@ class RanSliceCPOEnv(CMDP):
 
                             if 'urllc' in slice_type.lower() or slice_idx == 2:
                                 cbr_delay = ran_info.get('cbr_delay', 0.0)
-                                reward   += -3.0 * np.clip(cbr_delay / 100.0, 0, 1)
+                                reward   += -3.0 * (cbr_delay / 100.0)
 
                             elif 'embb' in slice_type.lower() or slice_idx == 0:
                                 cbr_delay  = ran_info.get('cbr_delay', 0.0)
-                                reward    += -2.0 * np.clip(cbr_delay / 100.0, 0, 1)
+                                reward    += -2.0 * (cbr_delay / 100.0)
                                 cbr_th     = ran_info.get('cbr_th', 0.0)
                                 vbr_th     = ran_info.get('vbr_th', 0.0)
                                 throughput = (cbr_th + vbr_th) / 2.0
-                                reward    += 2.0 * np.clip(throughput / 1e6, 0, 1)
+                                reward    += 2.0 * (throughput / 1e6)
 
                             elif 'mmtc' in slice_type.lower() or slice_idx == 1:
                                 delay   = ran_info.get('delay', 0.0)
-                                reward += -1.0 * np.clip(delay / 100.0, 0, 1)
+                                reward += -1.0 * (delay / 100.0)
 
         remaining_prbs    = self._n_prbs - alloc_prbs.sum()
         reward           += 0.1 * (remaining_prbs / self._n_prbs)
@@ -359,10 +397,10 @@ class TrainerCPO:
         _ENV_INSTANCE_COUNT[run_id] = 0
 
         print(f'\n{"="*60}')
-        print(f'=== CPO CYCLING CURRICULUM Training Run {run_id} ===')
+        print(f'=== CPO SEQUENTIAL CURRICULUM Training Run {run_id} ===')
         print(f'{"="*60}')
-        print(f'Scenarios cycle: {" → ".join(SCENARIOS)} → ... (repeating)')
-        print(f'Steps per scenario block: {STEPS_PER_SCENARIO}')
+        schedule = ' → '.join(f'{s}({n//1000}k)' for s, n in zip(SCENARIOS, STEPS_PER_SCENARIO))
+        print(f'Schedule: {schedule}')
         print(f'Total steps: {_TOTAL_STEPS}')
         print(f'Output: results/500k/CPO/history_{run_id}.npz')
 
@@ -419,12 +457,10 @@ if __name__ == '__main__':
     parser.add_argument("--runs", type=int, default=RUNS)
     parser.add_argument("--processes", type=int, default=PROCESSES)
     parser.add_argument("--sequential", action="store_true")
-    parser.add_argument("--steps-per-scenario", type=int, default=STEPS_PER_SCENARIO)
     parser.add_argument("--total-steps", type=int, default=TOTAL_STEPS,
-                        help="Total training steps (default: 500000)")
+                        help="Total training steps (default: 1000000)")
     args = parser.parse_args()
 
-    STEPS_PER_SCENARIO = args.steps_per_scenario
     _TOTAL_STEPS = args.total_steps
 
     trainer = TrainerCPO()

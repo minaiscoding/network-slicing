@@ -46,24 +46,24 @@ scenarios:
         count: 1
         ue_profiles:
           mobility:
-            pedestrian: 0.4
-            urban: 0.4
-            vehicular: 0.2
+            pedestrian: 0.7
+            urban: 0.3
+            vehicular: 0
           traffic_mix:
-            cbr: 0.8
-            vbr: 0.2
+            cbr: 0.7
+            vbr: 0.3
         cbr:
           lambda: 0.4
-          t_mean: 30.0
-          bit_rate: 5400000
+          t_mean: 50.0
+          bit_rate: 10800000
           packet_size: 1500
         vbr:
-          lambda: 0.3
-          t_mean: 30.0
-          p_size: 500
-          b_size: 300
+          lambda: 0.4
+          t_mean: 50.0
+          p_size: 2000
+          b_size: 500
           b_rate: 0.05
-          packet_size: 500
+          packet_size: 1000
         sla:
           cbr_th: 200000.0
           cbr_queue: 50000.0

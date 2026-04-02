@@ -585,3 +585,132 @@ def create_env_from_config(cfg,
 
     node = NodeB(slices_l1, slots_per_step, n_prbs)
     return gym.make('gym_ran_slice:RanSlice-v1', node_b=node, penalty=penalty)
+
+
+def create_env_from_config_forecast(cfg, rng, trace_path,
+                                    forecast_horizon=5,
+                                    slots_per_step=50,
+                                    propagation_type='macro_cell_urban_2GHz',
+                                    L1_level=True, penalty=100):
+    """
+    Build a forecast-augmented environment from a ScenarioConfig.
+
+    Same as create_env_from_config but uses the RanSliceForecast gym env
+    which augments observations with future PRB demand from a pre-generated
+    trace database.
+
+    Parameters
+    ----------
+    cfg              : ScenarioConfig
+    rng              : numpy RNG
+    trace_path       : str — path to trace_db_{scenario}.npz
+    forecast_horizon : int — number of future steps in observation
+    slots_per_step   : int
+    propagation_type : str
+    L1_level         : bool
+    penalty          : int
+    """
+    time_per_step = slots_per_step * 1e-4
+
+    (CBR_description, VBR_description,
+     MTC_description,
+     URLLC_CBR_description, URLLC_VBR_description) = _resolve_traffic(cfg.traffic_config)
+
+    SLA_embb, SLA_mmtc, SLA_urllc = _resolve_sla(cfg.sla_config)
+
+    n_prbs  = cfg.n_prbs
+    n_embb  = cfg.n_embb
+    n_mmtc  = cfg.n_mmtc
+    n_urllc = cfg.n_urllc
+
+    norm_const_embb = {
+        'cbr_traffic': 5e6 * time_per_step,
+        'cbr_th':      10e6 * time_per_step,
+        'cbr_queue':   10e4 * slots_per_step,
+        'cbr_snr':     35 * slots_per_step,
+        'cbr_delay':   20,
+        'vbr_traffic': 5e6 * time_per_step,
+        'vbr_th':      10e6 * time_per_step,
+        'vbr_queue':   10e4 * slots_per_step,
+        'vbr_snr':     35 * slots_per_step,
+        'vbr_delay':   20,
+    }
+    norm_const_mmtc = {
+        'devices': 100 * slots_per_step,
+        'avg_rep': 100 * slots_per_step,
+        'delay':   100 * slots_per_step,
+    }
+    norm_const_urllc = {
+        'cbr_traffic': 2e6 * time_per_step,
+        'cbr_th':      5e6 * time_per_step,
+        'cbr_queue':   5e3 * slots_per_step,
+        'cbr_snr':     35 * slots_per_step,
+        'cbr_delay':   10,
+        'vbr_traffic': 2e6 * time_per_step,
+        'vbr_th':      7e6 * time_per_step,
+        'vbr_queue':   5e3 * slots_per_step,
+        'vbr_snr':     35 * slots_per_step,
+        'vbr_delay':   10,
+    }
+
+    user_counter = count()
+
+    def new_slice_mmtc(id):
+        return SliceRANmMTC(rng, id, SLA_mmtc, MTC_description,
+                            state_variables_mmtc, norm_const_mmtc, slots_per_step)
+
+    def new_slice_embb(id):
+        embb_ue_profiles = cfg.traffic_config.get('embb', {}).get('ue_profiles', None)
+        return SliceRANeMBB(rng, user_counter, id, SLA_embb,
+                            CBR_description, VBR_description,
+                            state_variables_embb, norm_const_embb, slots_per_step,
+                            ue_profiles=embb_ue_profiles)
+
+    def new_slice_urllc(id):
+        urllc_ue_profiles = cfg.traffic_config.get('urllc', {}).get('ue_profiles', None)
+        return SliceRANURLC(rng, user_counter, id, SLA_urllc,
+                            URLLC_CBR_description, URLLC_VBR_description,
+                            state_variables_urllc, norm_const_urllc, slots_per_step,
+                            ue_profiles=urllc_ue_profiles)
+
+    snr_generator     = SINRSelectiveFading(rng, propagation_type, n_prbs=n_prbs)
+    mcs_codeset       = MCSCodeset(MCS_CODESET_EMBB)
+    mcs_codeset_urllc = MCSCodeset(MCS_CODESET_URLLC)
+    scheduler         = ProportionalFair(mcs_codeset)
+    scheduler_urllc   = ProportionalFair(mcs_codeset_urllc)
+
+    slices_l1 = []
+
+    if L1_level:
+        for id in range(n_embb):
+            slices_l1.append(
+                SliceL1eMBB(rng, snr_generator, 20, [new_slice_embb(id)], scheduler)
+            )
+        for id in range(n_mmtc):
+            slices_l1.append(
+                SliceL1mMTC(5, [new_slice_mmtc(id)])
+            )
+        for id in range(n_urllc):
+            slices_l1.append(
+                SliceL1URLLC(rng, snr_generator, 15, [new_slice_urllc(id)], scheduler_urllc)
+            )
+    else:
+        slices_l1.append(
+            SliceL1eMBB(rng, snr_generator, 20,
+                        [new_slice_embb(id) for id in range(n_embb)], scheduler)
+        )
+        if n_mmtc > 0:
+            slices_l1.append(
+                SliceL1mMTC(5, [new_slice_mmtc(id) for id in range(n_mmtc)])
+            )
+        if n_urllc > 0:
+            slices_l1.append(
+                SliceL1URLLC(rng, snr_generator, 15,
+                             [new_slice_urllc(id) for id in range(n_urllc)],
+                             scheduler_urllc)
+            )
+
+    node = NodeB(slices_l1, slots_per_step, n_prbs)
+    return gym.make('gym_ran_slice:RanSliceForecast-v1',
+                    node_b=node, trace_path=trace_path,
+                    forecast_horizon=forecast_horizon, penalty=penalty)
