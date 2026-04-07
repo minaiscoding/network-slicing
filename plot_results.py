@@ -25,9 +25,9 @@ START = 0
 END = None  # None = use all data (supports 500k+ steps)
 WINDOW = 400  # moving average
 RUNS = range(0, 30)  # 0 to 29 inclusive
-BASE_PATH = './results/500k/CPO/'
+BASE_PATH = './results/500k/CPO_forecast/'
 PRBS = 150  # adjust if different per run
-SLICE_NAMES = ['eMBB', 'mMTC', 'URLLC', 'Slice4', 'Slice5']  # Default slice names
+SLICE_NAMES = ['eMBB', 'mMTC', 'URLLC']  # Default slice names
 SCENARIOS = ['low', 'medium', 'congested']  # Curriculum learning scenarios
 
 
@@ -118,6 +118,20 @@ def load_data(base_path, runs, start, end, window, scenario=None):
     
     if not violations_list:
         return None
+
+    # Runs can have slightly different history lengths (e.g., interrupted jobs).
+    # Align all loaded runs to the shortest length to enable safe stacking.
+    min_len = min(len(v) for v in violations_list)
+    min_len = min(min_len, min(len(r) for r in resources_list))
+
+    violations_list = [v[:min_len] for v in violations_list]
+    resources_list = [r[:min_len] for r in resources_list]
+    if reward_list:
+        reward_list = [r[:min_len] for r in reward_list]
+    if violations_per_slice_list:
+        violations_per_slice_list = [v[:min_len, ...] for v in violations_per_slice_list]
+    if resources_per_slice_list:
+        resources_per_slice_list = [r[:min_len, ...] for r in resources_per_slice_list]
     
     # Determine n_slices from per-slice data if not in file
     if n_slices is None and violations_per_slice_list:

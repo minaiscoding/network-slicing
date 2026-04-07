@@ -28,10 +28,11 @@ from scenario_creator import create_env_from_config
 
 RUNS                = 30
 PROCESSES           = 4
-STEPS_PER_SCENARIO  = 20000
-TOTAL_STEPS         = 500000
+STEPS_PER_SCENARIO  = [5000, 10000, 5000]   # low 250s, medium 500s, congested 250s (500 slots/step @ 0.1ms)
+TOTAL_STEPS         = 20000
 PENALTY             = 1000
 SCENARIOS           = ['low', 'medium', 'congested']
+SLOTS_PER_STEP      = 500
 TRACE_SEED          = 42  # Same seed as forecast variant
 
 ENV_ID = "RanSliceCPONoForecast-v0"
@@ -86,7 +87,7 @@ class RanSliceCPONoForecastEnv(CMDP):
         self._global_step_count = 0
 
         cfg     = self.scenario_configs[0]
-        raw_env = create_env_from_config(cfg, _RNG, penalty=_PENALTY)
+        raw_env = create_env_from_config(cfg, _RNG, slots_per_step=SLOTS_PER_STEP, penalty=_PENALTY)
 
         self._results_path = './results/500k/CPO_no_forecast/'
         os.makedirs(self._results_path, exist_ok=True)
@@ -135,7 +136,10 @@ class RanSliceCPONoForecastEnv(CMDP):
         if not self._is_training_env:
             return
 
-        self.current_scenario_idx = (self.current_scenario_idx + 1) % len(self.scenario_names)
+        next_idx = self.current_scenario_idx + 1
+        if next_idx >= len(self.scenario_names):
+            return  # all scenarios done, stay on last
+        self.current_scenario_idx = next_idx
         scenario_name = self.scenario_names[self.current_scenario_idx]
         cfg = self.scenario_configs[self.current_scenario_idx]
 
@@ -145,7 +149,7 @@ class RanSliceCPONoForecastEnv(CMDP):
         if hasattr(self._env, 'env') and hasattr(self._env.env, 'close'):
             self._env.env.close()
 
-        new_raw = create_env_from_config(cfg, _RNG, penalty=_PENALTY)
+        new_raw = create_env_from_config(cfg, _RNG, slots_per_step=SLOTS_PER_STEP, penalty=_PENALTY)
         self._env.env = new_raw
 
         self._n_prbs = cfg.n_prbs
@@ -233,7 +237,8 @@ class RanSliceCPONoForecastEnv(CMDP):
         self._global_step_count += 1
 
         self._steps_in_current_scenario += 1
-        if self._is_training_env and self._steps_in_current_scenario >= STEPS_PER_SCENARIO:
+        scenario_budget = STEPS_PER_SCENARIO[self.current_scenario_idx]
+        if self._is_training_env and self._steps_in_current_scenario >= scenario_budget:
             self._switch_scenario()
             new_obs_raw, new_info = self._env.reset()
             obs = self._compute_observation(new_info)
@@ -346,8 +351,8 @@ class TrainerCPONoForecast:
         print(f'\n{"="*60}')
         print(f'=== CPO NO-FORECAST (Baseline) Training Run {run_id} ===')
         print(f'{"="*60}')
-        print(f'Scenarios cycle: {" → ".join(SCENARIOS)} → ... (repeating)')
-        print(f'Steps per scenario block: {STEPS_PER_SCENARIO}')
+        schedule = ' → '.join(f'{s}({n//1000}k)' for s, n in zip(SCENARIOS, STEPS_PER_SCENARIO))
+        print(f'Schedule: {schedule}')
         print(f'Total steps: {_TOTAL_STEPS}')
         print(f'Output: results/500k/CPO_no_forecast/history_{run_id}.npz')
 
@@ -404,11 +409,9 @@ if __name__ == '__main__':
     parser.add_argument("--runs", type=int, default=RUNS)
     parser.add_argument("--processes", type=int, default=PROCESSES)
     parser.add_argument("--sequential", action="store_true")
-    parser.add_argument("--steps-per-scenario", type=int, default=STEPS_PER_SCENARIO)
     parser.add_argument("--total-steps", type=int, default=TOTAL_STEPS)
     args = parser.parse_args()
 
-    STEPS_PER_SCENARIO = args.steps_per_scenario
     _TOTAL_STEPS = args.total_steps
 
     trainer = TrainerCPONoForecast()

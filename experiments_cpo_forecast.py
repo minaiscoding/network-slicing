@@ -39,7 +39,7 @@ from scenario_creator import create_env_from_config_forecast
 
 RUNS                = 30
 PROCESSES           = 4
-STEPS_PER_SCENARIO  = 20000
+STEPS_PER_SCENARIO  = [125000, 250000, 125000]   # low, medium, congested (total 500k)
 TOTAL_STEPS         = 500000
 PENALTY             = 1000
 SCENARIOS           = ['low', 'medium', 'congested']
@@ -175,7 +175,10 @@ class RanSliceCPOForecastEnv(CMDP):
         if not self._is_training_env:
             return
 
-        self.current_scenario_idx = (self.current_scenario_idx + 1) % len(self.scenario_names)
+        next_idx = self.current_scenario_idx + 1
+        if next_idx >= len(self.scenario_names):
+            return  # all scenarios done, stay on last
+        self.current_scenario_idx = next_idx
         scenario_name = self.scenario_names[self.current_scenario_idx]
         cfg = self.scenario_configs[self.current_scenario_idx]
 
@@ -302,9 +305,10 @@ class RanSliceCPOForecastEnv(CMDP):
         self._global_step_count += 1
         self._trace_step_idx += 1
 
-        # Check if it's time to cycle to next scenario
+        # Check if it's time to advance to next scenario
         self._steps_in_current_scenario += 1
-        if self._is_training_env and self._steps_in_current_scenario >= STEPS_PER_SCENARIO:
+        scenario_budget = STEPS_PER_SCENARIO[self.current_scenario_idx]
+        if self._is_training_env and self._steps_in_current_scenario >= scenario_budget:
             self._switch_scenario()
             new_obs_raw, new_info = self._env.reset()
             obs = self._compute_observation(new_info)
@@ -417,8 +421,8 @@ class TrainerCPOForecast:
         print(f'\n{"="*60}')
         print(f'=== CPO FORECAST Training Run {run_id} ===')
         print(f'{"="*60}')
-        print(f'Scenarios cycle: {" → ".join(SCENARIOS)} → ... (repeating)')
-        print(f'Steps per scenario block: {STEPS_PER_SCENARIO}')
+        schedule = ' → '.join(f'{s}({n//1000}k)' for s, n in zip(SCENARIOS, STEPS_PER_SCENARIO))
+        print(f'Schedule: {schedule}')
         print(f'Total steps: {_TOTAL_STEPS}')
         print(f'Forecast horizon: {_FORECAST_HORIZON}')
         print(f'Output: results/500k/CPO_forecast/history_{run_id}.npz')
@@ -476,12 +480,10 @@ if __name__ == '__main__':
     parser.add_argument("--runs", type=int, default=RUNS)
     parser.add_argument("--processes", type=int, default=PROCESSES)
     parser.add_argument("--sequential", action="store_true")
-    parser.add_argument("--steps-per-scenario", type=int, default=STEPS_PER_SCENARIO)
     parser.add_argument("--total-steps", type=int, default=TOTAL_STEPS)
     parser.add_argument("--forecast-horizon", type=int, default=FORECAST_HORIZON)
     args = parser.parse_args()
 
-    STEPS_PER_SCENARIO = args.steps_per_scenario
     _TOTAL_STEPS = args.total_steps
     _FORECAST_HORIZON = args.forecast_horizon
 

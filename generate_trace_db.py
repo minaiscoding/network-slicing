@@ -187,9 +187,10 @@ def build_node_b(cfg, rng, slots_per_step=SLOTS_PER_STEP):
 
 # ── Main trace generation ──
 
-def generate_trace(scenario_name, duration_s=DEFAULT_DURATION_S, seed=SEED):
+def generate_trace(scenario_name, duration_s=DEFAULT_DURATION_S, seed=SEED, n_steps_override=None):
     """
     Run the simulator for *duration_s* seconds and record per-step metrics.
+    If n_steps_override is given, ignore duration_s and use that directly.
 
     Returns dict with arrays of shape (n_steps, n_slices):
         traffic_arrivals, avg_snr, queue_depth, n_active_ues, prb_demand
@@ -201,8 +202,13 @@ def generate_trace(scenario_name, duration_s=DEFAULT_DURATION_S, seed=SEED):
 
     n_slices = len(slices_l1)
     n_prbs   = cfg.n_prbs
-    total_slots = int(duration_s / SLOT_LENGTH)
-    n_steps = total_slots // SLOTS_PER_STEP
+    if n_steps_override is not None:
+        n_steps = n_steps_override
+        total_slots = n_steps * SLOTS_PER_STEP
+        duration_s = total_slots * SLOT_LENGTH
+    else:
+        total_slots = int(duration_s / SLOT_LENGTH)
+        n_steps = total_slots // SLOTS_PER_STEP
 
     print(f"[{scenario_name}] Generating trace: {duration_s}s = {total_slots} slots = {n_steps} steps, "
           f"{n_slices} slices, {n_prbs} PRBs")
@@ -263,8 +269,9 @@ def generate_trace(scenario_name, duration_s=DEFAULT_DURATION_S, seed=SEED):
                         if isinstance(ran_info, dict):
                             n_active_ues[step_idx, s_idx] = ran_info.get('devices', n_active)
 
-        # Progress reporting
-        if (step_idx + 1) % 100000 == 0 or step_idx == 0:
+        # Progress reporting every 10%
+        report_interval = max(1, n_steps // 10)
+        if (step_idx + 1) % report_interval == 0 or step_idx == 0:
             pct = 100.0 * (step_idx + 1) / n_steps
             print(f"  [{scenario_name}] Step {step_idx + 1}/{n_steps} ({pct:.1f}%)")
 
@@ -304,6 +311,8 @@ def main():
     )
     parser.add_argument("--scenario", type=str, default=None,
                         help="Single scenario name (default: all)")
+    parser.add_argument("--steps", type=int, default=None,
+                        help="Number of RL steps to generate (overrides --duration)")
     parser.add_argument("--duration", type=float, default=DEFAULT_DURATION_S,
                         help="Simulation duration in seconds (default: 10800 = 3h)")
     parser.add_argument("--seed", type=int, default=SEED,
@@ -318,7 +327,8 @@ def main():
         print(f"\n{'='*60}")
         print(f"  Generating trace for: {scenario_name}")
         print(f"{'='*60}")
-        trace = generate_trace(scenario_name, duration_s=args.duration, seed=args.seed)
+        trace = generate_trace(scenario_name, duration_s=args.duration, seed=args.seed,
+                               n_steps_override=args.steps)
         save_trace(trace, output_dir=args.output)
 
         # Print summary statistics
