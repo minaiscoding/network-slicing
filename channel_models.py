@@ -164,8 +164,9 @@ class SINRSelectiveFading:
     def reset(self):
         self.users = {}
 
-    def insert_user(self, user_id):
-        fading_type = self.rng.integers(len(self.samples))
+    def insert_user(self, user_id, fading_type=None):
+        if fading_type is None:
+            fading_type = self.rng.integers(len(self.samples))
         n_samples = self.samples[fading_type].shape[1]
         index = self.rng.integers(n_samples)
         step = self.rng.choice([-1,1])
@@ -279,7 +280,7 @@ class MCSCodeset:
         self.order = df[["order"]].to_numpy().flatten()
         self.modulation = df[["modulation"]].squeeze()
         self.n_mcs = len(self.snr)
-        self.A, self.B = self.compute_factors(0.1)
+        self.A, self.B = self.compute_factors(0.5)
         # MIparameters covers qpsk / 16qam / 64qam — valid for both eMBB and URLLC codesets
         self.MIparameters = {'qpsk': [-0.25040431, 0.31591749],
                              '16qam': [5.12440916, 0.25423209],

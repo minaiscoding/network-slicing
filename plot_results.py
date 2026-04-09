@@ -22,13 +22,20 @@ import argparse
 
 # --- Config ---
 START = 0
-END = 20000
+END = None  # None = use all data (supports 500k+ steps)
 WINDOW = 400  # moving average
-RUNS = range(0, 22)  # 0 to 21 inclusive
-BASE_PATH = './results/scenario_comparison/TD3/'
+RUNS = range(0, 30)  # 0 to 29 inclusive
+BASE_PATH = './results/500k/CPO_forecast/'
 PRBS = 150  # adjust if different per run
-SLICE_NAMES = ['eMBB', 'mMTC', 'URLLC', 'Slice4', 'Slice5']  # Default slice names
+SLICE_NAMES = ['eMBB', 'mMTC', 'URLLC']  # Default slice names
 SCENARIOS = ['low', 'medium', 'congested']  # Curriculum learning scenarios
+
+
+def get_experiment_name(base_path):
+    """Infer experiment name from the results directory path."""
+    normalized_path = os.path.normpath(base_path)
+    experiment_name = os.path.basename(normalized_path)
+    return experiment_name or 'results'
 
 
 def has_curriculum_data(base_path, runs):
@@ -67,6 +74,7 @@ def load_data(base_path, runs, start, end, window, scenario=None):
     """
     violations_list = []
     resources_list = []
+    reward_list = []
     violations_per_slice_list = []
     resources_per_slice_list = []
     n_slices = None
@@ -94,6 +102,11 @@ def load_data(base_path, runs, start, end, window, scenario=None):
         violations_list.append(_violations)
         resources_list.append(_resources)
         
+        # Reward (if available)
+        if 'reward' in histories:
+            _reward = histories['reward'][start:end]
+            reward_list.append(_reward)
+        
         # Per-slice data (if available)
         if 'violation_per_slice' in histories:
             _viol_per_slice = histories['violation_per_slice'][start:end]
@@ -105,6 +118,20 @@ def load_data(base_path, runs, start, end, window, scenario=None):
     
     if not violations_list:
         return None
+
+    # Runs can have slightly different history lengths (e.g., interrupted jobs).
+    # Align all loaded runs to the shortest length to enable safe stacking.
+    min_len = min(len(v) for v in violations_list)
+    min_len = min(min_len, min(len(r) for r in resources_list))
+
+    violations_list = [v[:min_len] for v in violations_list]
+    resources_list = [r[:min_len] for r in resources_list]
+    if reward_list:
+        reward_list = [r[:min_len] for r in reward_list]
+    if violations_per_slice_list:
+        violations_per_slice_list = [v[:min_len, ...] for v in violations_per_slice_list]
+    if resources_per_slice_list:
+        resources_per_slice_list = [r[:min_len, ...] for r in resources_per_slice_list]
     
     # Determine n_slices from per-slice data if not in file
     if n_slices is None and violations_per_slice_list:
@@ -115,6 +142,7 @@ def load_data(base_path, runs, start, end, window, scenario=None):
     return {
         'violations_raw': np.array(violations_list),
         'resources_raw': np.array(resources_list),
+        'reward_raw': np.array(reward_list) if reward_list else None,
         'violations_per_slice': np.array(violations_per_slice_list) if violations_per_slice_list else None,
         'resources_per_slice': np.array(resources_per_slice_list) if resources_per_slice_list else None,
         'n_slices': n_slices,
@@ -139,6 +167,19 @@ def compute_metrics(data, window):
     res_raw = data['resources_raw']
     metrics['resources_raw'] = res_raw
     metrics['resources_ma'] = np.array([movingaverage(r, window) for r in res_raw])
+    
+    # Reward
+    if data['reward_raw'] is not None:
+        rew_raw = data['reward_raw']
+        metrics['reward_raw'] = rew_raw
+        metrics['reward_ma'] = np.array([movingaverage(r, window) for r in rew_raw])
+        metrics['reward_cumulative'] = np.cumsum(rew_raw, axis=1)
+    
+    # Cost (= violations cast to float)
+    cost_raw = viol_raw.astype(float)
+    metrics['cost_raw'] = cost_raw
+    metrics['cost_ma'] = np.array([movingaverage(c, window) for c in cost_raw])
+    metrics['cost_cumulative'] = np.cumsum(cost_raw, axis=1)
     
     # Per-slice violations
     if data['violations_per_slice'] is not None:
@@ -171,7 +212,7 @@ def compute_metrics(data, window):
     return metrics
 
 
-def plot_results(metrics, data, save_path='./figures/', prbs=150, suffix=''):
+def plot_results(metrics, data, algorithm_name, save_path='./figures/', prbs=150, suffix=''):
     """Generate all plots. suffix is appended to filenames (e.g., '_low')."""
     os.makedirs(save_path, exist_ok=True)
     n_slices = data['n_slices']
@@ -186,7 +227,7 @@ def plot_results(metrics, data, save_path='./figures/', prbs=150, suffix=''):
     # SLA violations (moving average)
     viol_mean, viol_ci = mean_ci(metrics['violations_ma'])
     steps_ma = np.arange(len(viol_mean))
-    axs1[0].plot(steps_ma, viol_mean, label='TD3')
+    axs1[0].plot(steps_ma, viol_mean, label=algorithm_name)
     axs1[0].fill_between(steps_ma, viol_mean - viol_ci, viol_mean + viol_ci, color='#DDDDDD')
     axs1[0].set_title('SLA Violations (Moving Avg)')
     axs1[0].set_xlabel('Steps')
@@ -197,7 +238,7 @@ def plot_results(metrics, data, save_path='./figures/', prbs=150, suffix=''):
     # Cumulative violations
     cum_mean, cum_ci = mean_ci(metrics['violations_cumulative'])
     steps_cum = np.arange(len(cum_mean))
-    axs1[1].plot(steps_cum, cum_mean, label='TD3')
+    axs1[1].plot(steps_cum, cum_mean, label=algorithm_name)
     axs1[1].fill_between(steps_cum, cum_mean - cum_ci, cum_mean + cum_ci, color='#DDDDDD')
     axs1[1].set_title('Cumulative SLA Violations')
     axs1[1].set_xlabel('Steps')
@@ -207,7 +248,7 @@ def plot_results(metrics, data, save_path='./figures/', prbs=150, suffix=''):
     
     # Resource allocation (moving average)
     res_mean, res_ci = mean_ci(metrics['resources_ma'])
-    axs1[2].plot(steps_ma, res_mean, label='TD3')
+    axs1[2].plot(steps_ma, res_mean, label=algorithm_name)
     axs1[2].fill_between(steps_ma, res_mean - res_ci, res_mean + res_ci, color='#DDDDDD')
     axs1[2].set_title('Resource Allocation (Moving Avg)')
     axs1[2].set_xlabel('Steps')
@@ -216,7 +257,62 @@ def plot_results(metrics, data, save_path='./figures/', prbs=150, suffix=''):
     axs1[2].grid()
     axs1[2].legend()
     
-    fig1.savefig(f'{save_path}TD3_overview{suffix}.png', dpi=150)
+    fig1.savefig(f'{save_path}{algorithm_name}_overview{suffix}.png', dpi=150)
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # Figure 1b: Reward & Cost
+    # ═══════════════════════════════════════════════════════════════════
+    has_reward = 'reward_ma' in metrics
+    fig1b, axs1b = plt.subplots(1, 4 if has_reward else 2, figsize=(18 if has_reward else 10, 4), constrained_layout=True)
+    
+    col = 0
+    if has_reward:
+        # Reward (moving average)
+        rew_mean, rew_ci = mean_ci(metrics['reward_ma'])
+        axs1b[col].plot(steps_ma, rew_mean, label=algorithm_name, color='tab:green')
+        axs1b[col].fill_between(steps_ma, rew_mean - rew_ci, rew_mean + rew_ci, color='#DDFFDD')
+        axs1b[col].set_title('Reward (Moving Avg)')
+        axs1b[col].set_xlabel('Steps')
+        axs1b[col].set_ylabel('Reward')
+        axs1b[col].grid()
+        axs1b[col].legend()
+        col += 1
+        
+        # Cumulative reward
+        rew_cum_mean, rew_cum_ci = mean_ci(metrics['reward_cumulative'])
+        steps_rew_cum = np.arange(len(rew_cum_mean))
+        axs1b[col].plot(steps_rew_cum, rew_cum_mean, label=algorithm_name, color='tab:green')
+        axs1b[col].fill_between(steps_rew_cum, rew_cum_mean - rew_cum_ci, rew_cum_mean + rew_cum_ci, color='#DDFFDD')
+        axs1b[col].set_title('Cumulative Reward')
+        axs1b[col].set_xlabel('Steps')
+        axs1b[col].set_ylabel('Total Reward')
+        axs1b[col].grid()
+        axs1b[col].legend()
+        col += 1
+    
+    # Cost (moving average)
+    cost_mean, cost_ci = mean_ci(metrics['cost_ma'])
+    axs1b[col].plot(steps_ma, cost_mean, label=algorithm_name, color='tab:red')
+    axs1b[col].fill_between(steps_ma, cost_mean - cost_ci, cost_mean + cost_ci, color='#FFDDDD')
+    axs1b[col].set_title('Cost (Moving Avg)')
+    axs1b[col].set_xlabel('Steps')
+    axs1b[col].set_ylabel('Cost')
+    axs1b[col].grid()
+    axs1b[col].legend()
+    col += 1
+    
+    # Cumulative cost
+    cost_cum_mean, cost_cum_ci = mean_ci(metrics['cost_cumulative'])
+    steps_cost_cum = np.arange(len(cost_cum_mean))
+    axs1b[col].plot(steps_cost_cum, cost_cum_mean, label=algorithm_name, color='tab:red')
+    axs1b[col].fill_between(steps_cost_cum, cost_cum_mean - cost_cum_ci, cost_cum_mean + cost_cum_ci, color='#FFDDDD')
+    axs1b[col].set_title('Cumulative Cost')
+    axs1b[col].set_xlabel('Steps')
+    axs1b[col].set_ylabel('Total Cost')
+    axs1b[col].grid()
+    axs1b[col].legend()
+    
+    fig1b.savefig(f'{save_path}{algorithm_name}_reward_cost{suffix}.png', dpi=150)
     
     # ═══════════════════════════════════════════════════════════════════
     # Figure 2: Resource Allocation - Direct vs Moving Average
@@ -228,7 +324,7 @@ def plot_results(metrics, data, save_path='./figures/', prbs=150, suffix=''):
     steps_raw = np.arange(len(res_raw_mean))
     subsample = max(1, len(steps_raw) // 500)  # Show ~500 points
     axs2[0].plot(steps_raw[::subsample], res_raw_mean[::subsample], 
-                 label='TD3', alpha=0.8, linewidth=0.8)
+                 label=algorithm_name, alpha=0.8, linewidth=0.8)
     axs2[0].fill_between(steps_raw[::subsample], 
                          (res_raw_mean - res_raw_ci)[::subsample], 
                          (res_raw_mean + res_raw_ci)[::subsample], 
@@ -241,7 +337,7 @@ def plot_results(metrics, data, save_path='./figures/', prbs=150, suffix=''):
     axs2[0].legend()
     
     # Moving average
-    axs2[1].plot(steps_ma, res_mean, label='TD3')
+    axs2[1].plot(steps_ma, res_mean, label=algorithm_name)
     axs2[1].fill_between(steps_ma, res_mean - res_ci, res_mean + res_ci, color='#DDDDDD')
     axs2[1].set_title('Resource Allocation (Moving Avg)')
     axs2[1].set_xlabel('Steps')
@@ -250,7 +346,7 @@ def plot_results(metrics, data, save_path='./figures/', prbs=150, suffix=''):
     axs2[1].grid()
     axs2[1].legend()
     
-    fig2.savefig(f'{save_path}TD3_resources_comparison{suffix}.png', dpi=150)
+    fig2.savefig(f'{save_path}{algorithm_name}_resources_comparison{suffix}.png', dpi=150)
     
     # ═══════════════════════════════════════════════════════════════════
     # Figure 3: SLA Violations Per Slice
@@ -290,7 +386,7 @@ def plot_results(metrics, data, save_path='./figures/', prbs=150, suffix=''):
         axs3[1].grid()
         axs3[1].legend()
         
-        fig3.savefig(f'{save_path}TD3_violations_per_slice{suffix}.png', dpi=150)
+        fig3.savefig(f'{save_path}{algorithm_name}_violations_per_slice{suffix}.png', dpi=150)
     
     # ═══════════════════════════════════════════════════════════════════
     # Figure 4: Resource Allocation Per Slice
@@ -332,12 +428,13 @@ def plot_results(metrics, data, save_path='./figures/', prbs=150, suffix=''):
         axs4[1].grid()
         axs4[1].legend()
         
-        fig4.savefig(f'{save_path}TD3_resources_per_slice{suffix}.png', dpi=150)
+        fig4.savefig(f'{save_path}{algorithm_name}_resources_per_slice{suffix}.png', dpi=150)
     
     # ═══════════════════════════════════════════════════════════════════
     # Figure 5: Combined Dashboard
     # ═══════════════════════════════════════════════════════════════════
-    fig5, axs5 = plt.subplots(2, 3, figsize=(16, 10), constrained_layout=True)
+    n_dash_rows = 3 if has_reward else 2
+    fig5, axs5 = plt.subplots(n_dash_rows, 3, figsize=(16, 5 * n_dash_rows), constrained_layout=True)
     
     # Row 1: Total metrics
     axs5[0, 0].plot(steps_ma, viol_mean, 'b-', label='Moving Avg')
@@ -363,47 +460,76 @@ def plot_results(metrics, data, save_path='./figures/', prbs=150, suffix=''):
     axs5[0, 2].set_ylim(0, prbs)
     axs5[0, 2].grid()
     
-    # Row 2: Per-slice metrics (if available)
+    # Row 2: Reward & Cost (if reward available)
+    if has_reward:
+        rew_mean_d, rew_ci_d = mean_ci(metrics['reward_ma'])
+        axs5[1, 0].plot(steps_ma, rew_mean_d, 'g-', label='Reward (MA)')
+        axs5[1, 0].fill_between(steps_ma, rew_mean_d - rew_ci_d, rew_mean_d + rew_ci_d, color='#DDFFDD')
+        axs5[1, 0].set_title('Reward (Moving Avg)')
+        axs5[1, 0].set_xlabel('Steps')
+        axs5[1, 0].set_ylabel('Reward')
+        axs5[1, 0].grid()
+        axs5[1, 0].legend()
+        
+        rew_cum_d, rew_cum_ci_d = mean_ci(metrics['reward_cumulative'])
+        axs5[1, 1].plot(np.arange(len(rew_cum_d)), rew_cum_d, 'g-')
+        axs5[1, 1].fill_between(np.arange(len(rew_cum_d)), rew_cum_d - rew_cum_ci_d, rew_cum_d + rew_cum_ci_d, color='#DDFFDD')
+        axs5[1, 1].set_title('Cumulative Reward')
+        axs5[1, 1].set_xlabel('Steps')
+        axs5[1, 1].set_ylabel('Total Reward')
+        axs5[1, 1].grid()
+        
+        cost_mean_d, cost_ci_d = mean_ci(metrics['cost_ma'])
+        axs5[1, 2].plot(steps_ma, cost_mean_d, 'r-', label='Cost (MA)')
+        axs5[1, 2].fill_between(steps_ma, cost_mean_d - cost_ci_d, cost_mean_d + cost_ci_d, color='#FFDDDD')
+        axs5[1, 2].set_title('Cost (Moving Avg)')
+        axs5[1, 2].set_xlabel('Steps')
+        axs5[1, 2].set_ylabel('Cost')
+        axs5[1, 2].grid()
+        axs5[1, 2].legend()
+    
+    # Last row: Per-slice metrics (if available)
+    ps_row = 2 if has_reward else 1
     if 'violations_per_slice_ma' in metrics:
         for slice_idx in range(n_slices):
             slice_data = metrics['violations_per_slice_ma'][:, :, slice_idx]
             mean, ci = mean_ci(slice_data)
-            axs5[1, 0].plot(steps_ps, mean, label=slice_names[slice_idx], color=colors[slice_idx])
-        axs5[1, 0].set_title('Violations Per Slice')
-        axs5[1, 0].set_xlabel('Steps')
-        axs5[1, 0].set_ylabel('Violations')
-        axs5[1, 0].grid()
-        axs5[1, 0].legend(fontsize=8)
+            axs5[ps_row, 0].plot(steps_ps, mean, label=slice_names[slice_idx], color=colors[slice_idx])
+        axs5[ps_row, 0].set_title('Violations Per Slice')
+        axs5[ps_row, 0].set_xlabel('Steps')
+        axs5[ps_row, 0].set_ylabel('Violations')
+        axs5[ps_row, 0].grid()
+        axs5[ps_row, 0].legend(fontsize=8)
         
         for slice_idx in range(n_slices):
             slice_data = metrics['violations_per_slice_cumulative'][:, :, slice_idx]
             mean, ci = mean_ci(slice_data)
-            axs5[1, 1].plot(steps_cum_ps, mean, label=slice_names[slice_idx], color=colors[slice_idx])
-        axs5[1, 1].set_title('Cumulative Per Slice')
-        axs5[1, 1].set_xlabel('Steps')
-        axs5[1, 1].set_ylabel('Total')
-        axs5[1, 1].grid()
-        axs5[1, 1].legend(fontsize=8)
+            axs5[ps_row, 1].plot(steps_cum_ps, mean, label=slice_names[slice_idx], color=colors[slice_idx])
+        axs5[ps_row, 1].set_title('Cumulative Per Slice')
+        axs5[ps_row, 1].set_xlabel('Steps')
+        axs5[ps_row, 1].set_ylabel('Total')
+        axs5[ps_row, 1].grid()
+        axs5[ps_row, 1].legend(fontsize=8)
     
     if 'resources_per_slice_ma' in metrics:
         for slice_idx in range(n_slices):
             slice_data = metrics['resources_per_slice_ma'][:, :, slice_idx]
             mean, ci = mean_ci(slice_data)
-            axs5[1, 2].plot(steps_res_ps, mean, label=slice_names[slice_idx], color=colors[slice_idx])
-        axs5[1, 2].set_title('Resources Per Slice')
-        axs5[1, 2].set_xlabel('Steps')
-        axs5[1, 2].set_ylabel('PRBs')
-        axs5[1, 2].grid()
-        axs5[1, 2].legend(fontsize=8)
+            axs5[ps_row, 2].plot(steps_res_ps, mean, label=slice_names[slice_idx], color=colors[slice_idx])
+        axs5[ps_row, 2].set_title('Resources Per Slice')
+        axs5[ps_row, 2].set_xlabel('Steps')
+        axs5[ps_row, 2].set_ylabel('PRBs')
+        axs5[ps_row, 2].grid()
+        axs5[ps_row, 2].legend(fontsize=8)
     
-    fig5.savefig(f'{save_path}TD3_dashboard{suffix}.png', dpi=150)
+    fig5.savefig(f'{save_path}{algorithm_name}_dashboard{suffix}.png', dpi=150)
     
     print(f"\nPlots saved to {save_path}")
-    return [fig1, fig2, fig3 if 'violations_per_slice_ma' in metrics else None, 
+    return [fig1, fig1b, fig2, fig3 if 'violations_per_slice_ma' in metrics else None, 
             fig4 if 'resources_per_slice_ma' in metrics else None, fig5]
 
 
-def plot_curriculum_comparison(base_path, runs, window, prbs, save_path='./figures/'):
+def plot_curriculum_comparison(base_path, runs, window, prbs, algorithm_name, save_path='./figures/'):
     """Plot comparison across all curriculum scenarios."""
     os.makedirs(save_path, exist_ok=True)
     
@@ -420,8 +546,12 @@ def plot_curriculum_comparison(base_path, runs, window, prbs, save_path='./figur
     # Colors for scenarios
     scenario_colors = {'low': 'green', 'medium': 'orange', 'congested': 'red'}
     
-    # Figure: Compare violations across scenarios
-    fig, axs = plt.subplots(1, 3, figsize=(16, 5), constrained_layout=True)
+    # Check if reward data is available
+    any_has_reward = any('reward_raw' in d and d['reward_raw'] is not None for d in scenario_data.values())
+    
+    # Figure: Compare violations, resources, reward, cost across scenarios
+    n_comp_cols = 5 if any_has_reward else 3
+    fig, axs = plt.subplots(1, n_comp_cols, figsize=(5 * n_comp_cols + 1, 5), constrained_layout=True)
     
     for scenario, data in scenario_data.items():
         metrics = compute_metrics(data, window)
@@ -442,6 +572,16 @@ def plot_curriculum_comparison(base_path, runs, window, prbs, save_path='./figur
         res_mean, res_ci = mean_ci(metrics['resources_ma'])
         axs[2].plot(steps, res_mean, label=scenario.capitalize(), color=color)
         axs[2].fill_between(steps, res_mean - res_ci, res_mean + res_ci, color=color, alpha=0.2)
+        
+        # Reward & Cost (if available)
+        if any_has_reward and 'reward_ma' in metrics:
+            rew_mean, rew_ci = mean_ci(metrics['reward_ma'])
+            axs[3].plot(steps, rew_mean, label=scenario.capitalize(), color=color)
+            axs[3].fill_between(steps, rew_mean - rew_ci, rew_mean + rew_ci, color=color, alpha=0.2)
+            
+            cost_mean, cost_ci = mean_ci(metrics['cost_ma'])
+            axs[4].plot(steps, cost_mean, label=scenario.capitalize(), color=color)
+            axs[4].fill_between(steps, cost_mean - cost_ci, cost_mean + cost_ci, color=color, alpha=0.2)
     
     axs[0].set_title('SLA Violations by Scenario')
     axs[0].set_xlabel('Steps')
@@ -462,18 +602,31 @@ def plot_curriculum_comparison(base_path, runs, window, prbs, save_path='./figur
     axs[2].legend()
     axs[2].grid()
     
-    fig.savefig(f'{save_path}TD3_curriculum_comparison.png', dpi=150)
-    print(f"Saved curriculum comparison to {save_path}TD3_curriculum_comparison.png")
+    if any_has_reward:
+        axs[3].set_title('Reward by Scenario')
+        axs[3].set_xlabel('Steps')
+        axs[3].set_ylabel('Reward')
+        axs[3].legend()
+        axs[3].grid()
+        
+        axs[4].set_title('Cost by Scenario')
+        axs[4].set_xlabel('Steps')
+        axs[4].set_ylabel('Cost')
+        axs[4].legend()
+        axs[4].grid()
+    
+    fig.savefig(f'{save_path}{algorithm_name}_curriculum_comparison.png', dpi=150)
+    print(f"Saved curriculum comparison to {save_path}{algorithm_name}_curriculum_comparison.png")
     
     return fig
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Plot TD3 results")
+    parser = argparse.ArgumentParser(description="Plot scenario comparison results")
     parser.add_argument("--scenario", type=str, default=None,
                         choices=['low', 'medium', 'congested', 'all'],
                         help="Scenario to plot (curriculum mode). Use 'all' for comparison.")
-    parser.add_argument("--runs", type=int, default=22,
+    parser.add_argument("--runs", type=int, default=30,
                         help="Number of runs to include (0 to N-1)")
     parser.add_argument("--path", type=str, default=BASE_PATH,
                         help="Path to results directory")
@@ -482,12 +635,13 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     runs = range(0, args.runs)
+    algorithm_name = get_experiment_name(args.path)
     
     curriculum_available = has_curriculum_data(args.path, runs)
 
     if args.scenario == 'all':
         # Plot comparison across all scenarios
-        plot_curriculum_comparison(args.path, runs, WINDOW, args.prbs)
+        plot_curriculum_comparison(args.path, runs, WINDOW, args.prbs, algorithm_name)
         
         # Also plot each scenario individually
         for scenario in SCENARIOS:
@@ -495,7 +649,7 @@ if __name__ == '__main__':
             data = load_data(args.path, runs, START, END, WINDOW, scenario=scenario)
             if data is not None:
                 metrics = compute_metrics(data, WINDOW)
-                plot_results(metrics, data, prbs=args.prbs, suffix=f"_{scenario}")
+                plot_results(metrics, data, algorithm_name, prbs=args.prbs, suffix=f"_{scenario}")
     elif args.scenario:
         # Plot specific scenario
         data = load_data(args.path, runs, START, END, WINDOW, scenario=args.scenario)
@@ -504,19 +658,19 @@ if __name__ == '__main__':
             exit()
         print(f"\nLoaded {data['n_runs']} runs with {data['n_slices']} slices for {args.scenario}")
         metrics = compute_metrics(data, WINDOW)
-        plot_results(metrics, data, prbs=args.prbs, suffix=f"_{args.scenario}")
+        plot_results(metrics, data, algorithm_name, prbs=args.prbs, suffix=f"_{args.scenario}")
     else:
         if curriculum_available:
             # Auto mode: curriculum files detected, plot them by default.
             print("Curriculum files detected. Plotting low/medium/congested outputs.")
-            plot_curriculum_comparison(args.path, runs, WINDOW, args.prbs)
+            plot_curriculum_comparison(args.path, runs, WINDOW, args.prbs, algorithm_name)
             for scenario in SCENARIOS:
                 print(f"\n=== Plotting {scenario.upper()} scenario ===")
                 data = load_data(args.path, runs, START, END, WINDOW, scenario=scenario)
                 if data is not None:
                     print(f"Loaded {data['n_runs']} runs with {data['n_slices']} slices for {scenario}")
                     metrics = compute_metrics(data, WINDOW)
-                    plot_results(metrics, data, prbs=args.prbs, suffix=f"_{scenario}")
+                    plot_results(metrics, data, algorithm_name, prbs=args.prbs, suffix=f"_{scenario}")
         else:
             # Legacy mode - single file per run
             data = load_data(args.path, runs, START, END, WINDOW)
@@ -525,6 +679,6 @@ if __name__ == '__main__':
                 exit()
             print(f"\nLoaded {data['n_runs']} runs with {data['n_slices']} slices")
             metrics = compute_metrics(data, WINDOW)
-            plot_results(metrics, data, prbs=args.prbs)
+            plot_results(metrics, data, algorithm_name, prbs=args.prbs)
     
     plt.show()

@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 '''
-Train PPO (OmniSafe) with CYCLING CURRICULUM across network-slicing scenarios.
-Cycles through low -> medium -> congested -> low -> ... with 20k steps per block.
-Total 500k steps. Single NPZ file per run recording all metrics.
+Train CPO WITHOUT FORECAST (baseline) using the SAME fixed seed as the
+forecast variant for fair comparison.
 
-Enhanced reward function (same as CPO/TD3):
-1. URLLC: minimize HoL delay (weight 3, highest priority)
-2. eMBB: minimize HoL delay (weight 2) AND maximize throughput (weight 2)
-3. mMTC: minimize delay (weight 1, lowest priority)
-Plus: PRB efficiency bonus and allocation stability penalty
+This is identical to experiments_cpo.py except:
+  - Uses the SAME RNG seed (42) as generate_trace_db.py and experiments_cpo_forecast.py
+  - Outputs results to results/500k/CPO_no_forecast/ for side-by-side comparison
 
 Usage:
-    python experiments_ppo.py
-    python experiments_ppo.py --runs 5 --sequential
-    python experiments_ppo.py --steps-per-scenario 10000
+    python experiments_cpo_no_forecast.py
+    python experiments_cpo_no_forecast.py --runs 5 --sequential
 '''
 
 import os
@@ -32,26 +28,26 @@ from scenario_creator import create_env_from_config
 
 RUNS                = 30
 PROCESSES           = 4
-STEPS_PER_SCENARIO  = 20000
+STEPS_PER_SCENARIO  = [125000, 250000, 125000]   # low, medium, congested (total 500k)
 TOTAL_STEPS         = 500000
 PENALTY             = 1000
 SCENARIOS           = ['low', 'medium', 'congested']
+SLOTS_PER_STEP      = 500
+TRACE_SEED          = 42  # Same seed as forecast variant
 
-ENV_ID = "RanSlicePPO-v0"
+ENV_ID = "RanSliceCPONoForecast-v0"
 
-_RNG         = np.random.default_rng(3)
+_RNG         = np.random.default_rng(TRACE_SEED)  # Same seed for fair comparison
 _PENALTY     = 100.0
 _TOTAL_STEPS = TOTAL_STEPS
 
 _scenario_configs_cache = {}
 
-# ── module-level state for curriculum learning ──
 _CURRENT_RUN_ID = 0
 _ENV_INSTANCE_COUNT = {}
 
 
 def get_scenario_config(scenario_name):
-    """Load scenario config from yaml cache."""
     if scenario_name not in _scenario_configs_cache:
         _scenario_configs_cache[scenario_name] = load_scenario('scenarios.yaml', scenario_name)
     return _scenario_configs_cache[scenario_name]
@@ -59,13 +55,10 @@ def get_scenario_config(scenario_name):
 
 @env_register
 @env_unregister
-class RanSliceEnv(CMDP):
+class RanSliceCPONoForecastEnv(CMDP):
     """
-    Cycling Curriculum PPO environment.
-
-    Cycles through scenarios (low -> medium -> congested -> low -> ...)
-    with STEPS_PER_SCENARIO steps per block. Single NPZ file per run.
-    Total: 500k steps, recording reward/cost/violations/resources.
+    Baseline CPO environment WITHOUT forecast.
+    Same as RanSliceCPOEnv but with fixed seed for fair comparison.
     """
 
     _support_envs: ClassVar[list[str]] = [ENV_ID]
@@ -85,20 +78,18 @@ class RanSliceEnv(CMDP):
         self._instance_id = _ENV_INSTANCE_COUNT[self._run_id]
         self._is_training_env = (self._instance_id == 1)
 
-        print(f"[Run {self._run_id}] Creating env instance {self._instance_id} "
+        print(f"[Run {self._run_id}] Creating NO-FORECAST env instance {self._instance_id} "
               f"({'TRAINING' if self._is_training_env else 'EVAL'})")
 
-        # Load scenario configs
         self.scenario_names   = SCENARIOS
         self.scenario_configs = [get_scenario_config(n) for n in self.scenario_names]
         self.current_scenario_idx = 0
         self._global_step_count = 0
 
-        # Create first scenario environment
         cfg     = self.scenario_configs[0]
-        raw_env = create_env_from_config(cfg, _RNG, penalty=_PENALTY)
+        raw_env = create_env_from_config(cfg, _RNG, slots_per_step=SLOTS_PER_STEP, penalty=_PENALTY)
 
-        self._results_path = './results/500k/PPO/'
+        self._results_path = './results/500k/CPO_no_forecast/'
         os.makedirs(self._results_path, exist_ok=True)
 
         if self._is_training_env:
@@ -142,11 +133,13 @@ class RanSliceEnv(CMDP):
         self._steps_in_current_scenario = 0
 
     def _switch_scenario(self):
-        """Cycle to next scenario (low -> medium -> congested -> low -> ...)."""
         if not self._is_training_env:
             return
 
-        self.current_scenario_idx = (self.current_scenario_idx + 1) % len(self.scenario_names)
+        next_idx = self.current_scenario_idx + 1
+        if next_idx >= len(self.scenario_names):
+            return  # all scenarios done, stay on last
+        self.current_scenario_idx = next_idx
         scenario_name = self.scenario_names[self.current_scenario_idx]
         cfg = self.scenario_configs[self.current_scenario_idx]
 
@@ -156,7 +149,7 @@ class RanSliceEnv(CMDP):
         if hasattr(self._env, 'env') and hasattr(self._env.env, 'close'):
             self._env.env.close()
 
-        new_raw = create_env_from_config(cfg, _RNG, penalty=_PENALTY)
+        new_raw = create_env_from_config(cfg, _RNG, slots_per_step=SLOTS_PER_STEP, penalty=_PENALTY)
         self._env.env = new_raw
 
         self._n_prbs = cfg.n_prbs
@@ -243,9 +236,9 @@ class RanSliceEnv(CMDP):
         self._step_count += 1
         self._global_step_count += 1
 
-        # Check if it's time to cycle to next scenario
         self._steps_in_current_scenario += 1
-        if self._is_training_env and self._steps_in_current_scenario >= STEPS_PER_SCENARIO:
+        scenario_budget = STEPS_PER_SCENARIO[self.current_scenario_idx]
+        if self._is_training_env and self._steps_in_current_scenario >= scenario_budget:
             self._switch_scenario()
             new_obs_raw, new_info = self._env.reset()
             obs = self._compute_observation(new_info)
@@ -344,11 +337,11 @@ class RanSliceEnv(CMDP):
 
 # ======================================================================== #
 
-class TrainerPPO:
-    """Train PPO agent with cycling curriculum learning."""
+class TrainerCPONoForecast:
+    """Train CPO agent WITHOUT forecast (baseline) with cycling curriculum learning."""
 
     def __init__(self):
-        os.makedirs('./results/500k/PPO/', exist_ok=True)
+        os.makedirs('./results/500k/CPO_no_forecast/', exist_ok=True)
 
     def train(self, run_id: int):
         global _CURRENT_RUN_ID, _ENV_INSTANCE_COUNT
@@ -356,12 +349,12 @@ class TrainerPPO:
         _ENV_INSTANCE_COUNT[run_id] = 0
 
         print(f'\n{"="*60}')
-        print(f'=== PPO CYCLING CURRICULUM Training Run {run_id} ===')
+        print(f'=== CPO NO-FORECAST (Baseline) Training Run {run_id} ===')
         print(f'{"="*60}')
-        print(f'Scenarios cycle: {" -> ".join(SCENARIOS)} -> ... (repeating)')
-        print(f'Steps per scenario block: {STEPS_PER_SCENARIO}')
+        schedule = ' → '.join(f'{s}({n//1000}k)' for s, n in zip(SCENARIOS, STEPS_PER_SCENARIO))
+        print(f'Schedule: {schedule}')
         print(f'Total steps: {_TOTAL_STEPS}')
-        print(f'Output: results/500k/PPO/history_{run_id}.npz')
+        print(f'Output: results/500k/CPO_no_forecast/history_{run_id}.npz')
 
         custom_cfgs = {
             "train_cfgs": {
@@ -369,20 +362,23 @@ class TrainerPPO:
                 "device": "cuda:0",
             },
             "algo_cfgs": {
-                "steps_per_epoch": 2000,
+                "steps_per_epoch": 1000,
                 "update_iters": 10,
                 "batch_size": 128,
                 "target_kl": 0.02,
                 "entropy_coef": 0.01,
+                "cost_limit": 25.0,
                 "gamma": 0.99,
                 "cost_gamma": 0.99,
                 "lam": 0.95,
                 "lam_c": 0.95,
+                "cg_damping": 0.1,
+                "cg_iters": 15,
                 "use_cost": True,
             },
             "model_cfgs": {
-                "actor": {"hidden_sizes": [64, 64], "activation": "tanh"},
-                "critic": {"hidden_sizes": [64, 64], "activation": "tanh", "lr": 0.001},
+                "actor": {"hidden_sizes": [128, 128], "activation": "tanh"},
+                "critic": {"hidden_sizes": [128, 128], "activation": "tanh", "lr": 0.001},
             },
             "logger_cfgs": {
                 "use_wandb": False,
@@ -391,7 +387,7 @@ class TrainerPPO:
         }
 
         agent = omnisafe.Agent(
-            algo="PPO",
+            algo="CPO",
             env_id=ENV_ID,
             custom_cfgs=custom_cfgs,
         )
@@ -408,20 +404,17 @@ class TrainerPPO:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description="Train PPO with curriculum learning on RAN slicing"
+        description="Train CPO WITHOUT forecast (baseline) on RAN slicing"
     )
     parser.add_argument("--runs", type=int, default=RUNS)
     parser.add_argument("--processes", type=int, default=PROCESSES)
     parser.add_argument("--sequential", action="store_true")
-    parser.add_argument("--steps-per-scenario", type=int, default=STEPS_PER_SCENARIO)
-    parser.add_argument("--total-steps", type=int, default=TOTAL_STEPS,
-                        help="Total training steps (default: 500000)")
+    parser.add_argument("--total-steps", type=int, default=TOTAL_STEPS)
     args = parser.parse_args()
 
-    STEPS_PER_SCENARIO = args.steps_per_scenario
     _TOTAL_STEPS = args.total_steps
 
-    trainer = TrainerPPO()
+    trainer = TrainerCPONoForecast()
     run_list = list(range(args.runs))
 
     if args.sequential:

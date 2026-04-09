@@ -323,19 +323,19 @@ class RanSliceTD3Env(CMDP):
 
                             if 'urllc' in slice_type.lower() or slice_idx == 2:
                                 cbr_delay = ran_info.get('cbr_delay', 0.0)
-                                reward   += -3.0 * np.clip(cbr_delay / 100.0, 0, 1)
+                                reward   += -3.0 * (cbr_delay / 100.0)
 
                             elif 'embb' in slice_type.lower() or slice_idx == 0:
                                 cbr_delay  = ran_info.get('cbr_delay', 0.0)
-                                reward    += -2.0 * np.clip(cbr_delay / 100.0, 0, 1)
+                                reward    += -2.0 * (cbr_delay / 100.0)
                                 cbr_th     = ran_info.get('cbr_th', 0.0)
                                 vbr_th     = ran_info.get('vbr_th', 0.0)
                                 throughput = (cbr_th + vbr_th) / 2.0
-                                reward    += 2.0 * np.clip(throughput / 1e6, 0, 1)
+                                reward    += 2.0 * (throughput / 1e6)
 
                             elif 'mmtc' in slice_type.lower() or slice_idx == 1:
                                 delay   = ran_info.get('delay', 0.0)
-                                reward += -1.0 * np.clip(delay / 100.0, 0, 1)
+                                reward += -1.0 * (delay / 100.0)
 
         remaining_prbs    = self._n_prbs - alloc_prbs.sum()
         reward           += 0.1 * (remaining_prbs / self._n_prbs)
