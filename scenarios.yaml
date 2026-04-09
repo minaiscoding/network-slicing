@@ -3,7 +3,6 @@ scenarios:
   - name: low
     n_prbs: 150
     slices:
-
       embb:
         count: 1
         ue_profiles:
@@ -33,7 +32,6 @@ scenarios:
           vbr_th: 5000000.0
           vbr_queue: 200000.0
           vbr_delay: 500.0
-
       mmtc:
         count: 1
         n_devices: 3000
@@ -41,7 +39,6 @@ scenarios:
         period_set: [20000, 50000, 100000]
         sla:
           delay: 3000.0
-
       urllc:
         count: 1
         ue_profiles:
@@ -72,11 +69,9 @@ scenarios:
           vbr_queue: 100000.0
           vbr_delay: 100.0
 
-
   - name: medium
     n_prbs: 150
     slices:
-
       embb:
         count: 1
         ue_profiles:
@@ -106,7 +101,6 @@ scenarios:
           vbr_th: 100000000.0
           vbr_queue: 200000.0
           vbr_delay: 500.0
-
       mmtc:
         count: 1
         n_devices: 4000
@@ -114,7 +108,6 @@ scenarios:
         period_set: [1000, 5000, 10000, 15000, 20000, 25000, 50000, 100000]
         sla:
           delay: 3000.0
-
       urllc:
         count: 1
         ue_profiles:
@@ -145,11 +138,9 @@ scenarios:
           vbr_queue: 100000.0
           vbr_delay: 100.0
 
-
   - name: congested
     n_prbs: 150
     slices:
-
       embb:
         count: 1
         ue_profiles:
@@ -179,7 +170,6 @@ scenarios:
           vbr_th: 200000000.0
           vbr_queue: 200000.0
           vbr_delay: 500.0
-
       mmtc:
         count: 1
         n_devices: 8000
@@ -187,7 +177,6 @@ scenarios:
         period_set: [1000, 5000, 10000, 15000, 20000, 25000, 50000, 100000]
         sla:
           delay: 3000.0
-
       urllc:
         count: 1
         ue_profiles:
@@ -215,5 +204,213 @@ scenarios:
           cbr_queue: 50000.0
           cbr_delay: 100.0
           vbr_th: 10000000.0
+          vbr_queue: 100000.0
+          vbr_delay: 100.0
+
+  # Evaluation scenarios (low/medium congested, diverse)
+  - name: eval_low_1
+    n_prbs: 150
+    slices:
+      embb:
+        count: 1
+        ue_profiles:
+          mobility:
+            pedestrian: 0.6
+            urban: 0.4
+            vehicular: 0
+          traffic_mix:
+            cbr: 0.8
+            vbr: 0.2
+        cbr:
+          lambda: 0.3
+          t_mean: 45.0
+          bit_rate: 9000000
+          packet_size: 1200
+        vbr:
+          lambda: 0.3
+          t_mean: 45.0
+          p_size: 1500
+          b_size: 400
+          b_rate: 0.04
+          packet_size: 900
+        sla:
+          cbr_th: 4000000.0
+          cbr_queue: 150000.0
+          cbr_delay: 450.0
+          vbr_th: 4000000.0
+          vbr_queue: 150000.0
+          vbr_delay: 450.0
+      mmtc:
+        count: 1
+        n_devices: 2800
+        repetition_set: [2, 4, 8]
+        period_set: [20000, 40000, 80000]
+        sla:
+          delay: 2800.0
+      urllc:
+        count: 1
+        ue_profiles:
+          mobility:
+            pedestrian: 0.6
+            urban: 0.4
+            vehicular: 0
+          traffic_mix:
+            cbr: 0.8
+            vbr: 0.2
+        cbr:
+          lambda: 0.3
+          t_mean: 45.0
+          bit_rate: 9000000
+          packet_size: 1200
+        vbr:
+          lambda: 0.3
+          t_mean: 45.0
+          p_size: 1500
+          b_size: 400
+          b_rate: 0.04
+          packet_size: 900
+        sla:
+          cbr_th: 150000.0
+          cbr_queue: 40000.0
+          cbr_delay: 90.0
+          vbr_th: 90000.0
+          vbr_queue: 90000.0
+          vbr_delay: 90.0
+
+  - name: eval_low_2
+    n_prbs: 150
+    slices:
+      embb:
+        count: 1
+        ue_profiles:
+          mobility:
+            pedestrian: 0.5
+            urban: 0.5
+            vehicular: 0
+          traffic_mix:
+            cbr: 0.6
+            vbr: 0.4
+        cbr:
+          lambda: 0.35
+          t_mean: 48.0
+          bit_rate: 10000000
+          packet_size: 1300
+        vbr:
+          lambda: 0.35
+          t_mean: 48.0
+          p_size: 1600
+          b_size: 500
+          b_rate: 0.045
+          packet_size: 950
+        sla:
+          cbr_th: 4500000.0
+          cbr_queue: 180000.0
+          cbr_delay: 470.0
+          vbr_th: 4500000.0
+          vbr_queue: 180000.0
+          vbr_delay: 470.0
+      mmtc:
+        count: 1
+        n_devices: 2900
+        repetition_set: [2, 4, 8, 16]
+        period_set: [15000, 30000, 60000]
+        sla:
+          delay: 2900.0
+      urllc:
+        count: 1
+        ue_profiles:
+          mobility:
+            pedestrian: 0.5
+            urban: 0.5
+            vehicular: 0
+          traffic_mix:
+            cbr: 0.6
+            vbr: 0.4
+        cbr:
+          lambda: 0.35
+          t_mean: 48.0
+          bit_rate: 10000000
+          packet_size: 1300
+        vbr:
+          lambda: 0.35
+          t_mean: 48.0
+          p_size: 1600
+          b_size: 500
+          b_rate: 0.045
+          packet_size: 950
+        sla:
+          cbr_th: 160000.0
+          cbr_queue: 45000.0
+          cbr_delay: 95.0
+          vbr_th: 100000.0
+          vbr_queue: 100000.0
+          vbr_delay: 95.0
+
+  - name: eval_medium_1
+    n_prbs: 150
+    slices:
+      embb:
+        count: 1
+        ue_profiles:
+          mobility:
+            pedestrian: 0.4
+            urban: 0.4
+            vehicular: 0.2
+          traffic_mix:
+            cbr: 0.5
+            vbr: 0.5
+        cbr:
+          lambda: 0.7
+          t_mean: 55.0
+          bit_rate: 12000000
+          packet_size: 1400
+        vbr:
+          lambda: 0.7
+          t_mean: 55.0
+          p_size: 2000
+          b_size: 700
+          b_rate: 0.055
+          packet_size: 1000
+        sla:
+          cbr_th: 80000000.0
+          cbr_queue: 200000.0
+          cbr_delay: 480.0
+          vbr_th: 80000000.0
+          vbr_queue: 200000.0
+          vbr_delay: 480.0
+      mmtc:
+        count: 1
+        n_devices: 3500
+        repetition_set: [2, 4, 8, 16, 32]
+        period_set: [5000, 10000, 20000, 40000]
+        sla:
+          delay: 3000.0
+      urllc:
+        count: 1
+        ue_profiles:
+          mobility:
+            pedestrian: 0.4
+            urban: 0.4
+            vehicular: 0.2
+          traffic_mix:
+            cbr: 0.5
+            vbr: 0.5
+        cbr:
+          lambda: 0.7
+          t_mean: 55.0
+          bit_rate: 12000000
+          packet_size: 1400
+        vbr:
+          lambda: 0.7
+          t_mean: 55.0
+          p_size: 2000
+          b_size: 700
+          b_rate: 0.055
+          packet_size: 1000
+        sla:
+          cbr_th: 400000.0
+          cbr_queue: 50000.0
+          cbr_delay: 100.0
+          vbr_th: 200000.0
           vbr_queue: 100000.0
           vbr_delay: 100.0

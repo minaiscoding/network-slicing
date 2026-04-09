@@ -35,16 +35,19 @@ from scenario_creator import create_env_from_config
 
 RUNS                = 30
 PROCESSES           = 4
-TOTAL_STEPS         = 1000000
+TOTAL_STEPS         = 2000000
 PENALTY             = 1000
 SCENARIOS           = ['low', 'medium', 'congested']
-STEPS_PER_SCENARIO  = [250000, 500000, 250000]   # low, medium, congested
+STEPS_PER_SCENARIO  = [500000, 1000000, 500000]   # low 500k, medium 1M, congested 500k
+STEPS_PER_EPOCH     = 8000
 
 ENV_ID = "RanSliceCPO-v1"
 
-_RNG         = np.random.default_rng(3)
-_PENALTY     = 100.0
-_TOTAL_STEPS = TOTAL_STEPS
+_RNG          = np.random.default_rng(3)
+_PENALTY      = 10.0
+_TOTAL_STEPS  = TOTAL_STEPS
+_RESULTS_PATH = './results/500k/CPO/'
+_EPOCH_COUNTER = 0   # incremented every STEPS_PER_EPOCH steps for reseeding
 
 _scenario_configs_cache = {}
 
@@ -101,7 +104,7 @@ class RanSliceCPOEnv(CMDP):
         cfg     = self.scenario_configs[0]
         raw_env = create_env_from_config(cfg, _RNG, penalty=_PENALTY)
 
-        self._results_path = './results/500k/CPO/'
+        self._results_path = _RESULTS_PATH
         os.makedirs(self._results_path, exist_ok=True)
 
         if self._is_training_env:
@@ -125,7 +128,7 @@ class RanSliceCPOEnv(CMDP):
                 continuous_mode = True,
             )
 
-        self._max_episode_steps = 500
+        self._max_episode_steps = 2000
         self._n_prbs            = cfg.n_prbs
         self._step_count        = 0
 
@@ -144,14 +147,15 @@ class RanSliceCPOEnv(CMDP):
         self._last_allocation = np.zeros(self._n_slices, dtype=float)
         self._steps_in_current_scenario = 0
 
-        # Emergency excess redistribution: track consecutive violations per slice
-        # Priority: URLLC (slice 2) = 3, eMBB (slice 0) = 2, mMTC (slice 1) = 1
+        # Emergency PRB redistribution: track consecutive violations per slice
+        # Priority order: URLLC (slice 2) > eMBB (slice 0) > mMTC (slice 1)
         self._consecutive_violations = np.zeros(self._n_slices, dtype=int)
-        self._slice_priority = np.zeros(self._n_slices, dtype=int)
-        self._slice_priority[0] = 2   # eMBB
-        self._slice_priority[1] = 1   # mMTC
-        self._slice_priority[2] = 3   # URLLC
-        self._VIOLATION_THRESHOLD = 3
+        # Sorted indices by priority: URLLC first, eMBB second, mMTC last
+        self._priority_order = [2, 0, 1]   # URLLC > eMBB > mMTC
+        self._EXCESS_THRESHOLD = 2    # 2 consecutive violations → give all excess PRBs
+        self._STEAL_THRESHOLD  = 5    # 5 consecutive violations → steal from mMTC
+        self._MMTC_IDX         = 1    # mMTC slice index (donor for stealing)
+        self._MMTC_MIN_PRBS    = 5    # minimum PRBs mMTC keeps when stolen from
 
     def _switch_scenario(self):
         """Advance to next scenario (low → medium → congested, one pass)."""
@@ -244,18 +248,34 @@ class RanSliceCPOEnv(CMDP):
             [int(np.floor(a * self._n_prbs)) for a in alloc], dtype=int
         )
 
-        # ── Emergency excess redistribution ──
-        # If any slice has been violating for 3+ consecutive steps,
-        # give all remaining PRBs to the highest-priority violating slice.
+        # ── Emergency PRB redistribution ──
+        # Phase 1: Give excess PRBs to the highest-priority violating slice (>=2 steps)
+        # Phase 2: If still violating after 5 steps, steal PRBs from mMTC
+        # Priority: URLLC > eMBB > mMTC — serve in order until each is safe
         excess_prbs = self._n_prbs - alloc_prbs.sum()
-        if excess_prbs > 0:
-            # Find slices in emergency (consecutive violations >= threshold)
-            emergency_mask = self._consecutive_violations >= self._VIOLATION_THRESHOLD
-            if emergency_mask.any():
-                # Pick the highest-priority emergency slice
-                emergency_priorities = self._slice_priority * emergency_mask
-                winner = int(np.argmax(emergency_priorities))
-                alloc_prbs[winner] += excess_prbs
+
+        # Find which slices are in emergency (2+ consecutive violations)
+        emergency_slices = [s for s in self._priority_order
+                            if self._consecutive_violations[s] >= self._EXCESS_THRESHOLD]
+
+        if emergency_slices and excess_prbs > 0:
+            # Give ALL excess to highest-priority violating slice
+            winner = emergency_slices[0]
+            alloc_prbs[winner] += excess_prbs
+
+        # Phase 2: Steal from mMTC if any slice has been violating 5+ steps
+        severe_slices = [s for s in self._priority_order
+                         if (self._consecutive_violations[s] >= self._STEAL_THRESHOLD
+                             and s != self._MMTC_IDX)]
+
+        if severe_slices:
+            # Steal from mMTC (keep minimum), give to highest-priority severe slice
+            mmtc_prbs = alloc_prbs[self._MMTC_IDX]
+            stealable = max(0, mmtc_prbs - self._MMTC_MIN_PRBS)
+            if stealable > 0:
+                winner = severe_slices[0]
+                alloc_prbs[self._MMTC_IDX] -= stealable
+                alloc_prbs[winner] += stealable
 
         result = self._env.step(alloc_prbs)
 
@@ -282,6 +302,13 @@ class RanSliceCPOEnv(CMDP):
 
         self._step_count += 1
         self._global_step_count += 1
+
+        # ── Reseed RNG at each epoch boundary for diversity ──
+        global _EPOCH_COUNTER, _RNG
+        if self._is_training_env and self._global_step_count % STEPS_PER_EPOCH == 0:
+            _EPOCH_COUNTER += 1
+            new_seed = 3 + _EPOCH_COUNTER * 1000 + self._run_id
+            _RNG = np.random.default_rng(new_seed)
 
         # Check if it's time to advance to next scenario
         self._steps_in_current_scenario += 1
@@ -339,27 +366,30 @@ class RanSliceCPOEnv(CMDP):
 
                             if 'urllc' in slice_type.lower() or slice_idx == 2:
                                 cbr_delay = ran_info.get('cbr_delay', 0.0)
-                                reward   += -3.0 * (cbr_delay / 100.0)
+                                reward   += -0.3 * (cbr_delay / 1000.0)
 
                             elif 'embb' in slice_type.lower() or slice_idx == 0:
                                 cbr_delay  = ran_info.get('cbr_delay', 0.0)
-                                reward    += -2.0 * (cbr_delay / 100.0)
+                                reward    += -0.2 * (cbr_delay / 1000.0)
                                 cbr_th     = ran_info.get('cbr_th', 0.0)
                                 vbr_th     = ran_info.get('vbr_th', 0.0)
                                 throughput = (cbr_th + vbr_th) / 2.0
-                                reward    += 2.0 * (throughput / 1e6)
+                                reward    += 0.2 * (throughput / 1e7)
 
                             elif 'mmtc' in slice_type.lower() or slice_idx == 1:
                                 delay   = ran_info.get('delay', 0.0)
-                                reward += -1.0 * (delay / 100.0)
+                                reward += -0.1 * (delay / 1000.0)
 
         remaining_prbs    = self._n_prbs - alloc_prbs.sum()
-        reward           += 0.1 * (remaining_prbs / self._n_prbs)
+        reward           += 0.005 * (remaining_prbs / self._n_prbs)
 
         allocation_change = np.sum(np.abs(alloc_prbs - self._last_allocation))
-        reward           -= 0.05 * (allocation_change / self._n_prbs)
+        reward           -= 0.002 * (allocation_change / self._n_prbs)
 
         self._last_allocation = alloc_prbs.copy().astype(float)
+
+        # Clip reward to prevent exploding gradients
+        reward = np.clip(reward, -1.0, 1.0)
         return reward
 
     def render(self, *args, **kwargs):
@@ -410,12 +440,14 @@ class TrainerCPO:
                 "device": "cuda:0",
             },
             "algo_cfgs": {
-                "steps_per_epoch": 1000,
-                "update_iters": 10,
+                "steps_per_epoch": STEPS_PER_EPOCH,
+                "update_iters": 3,
                 "batch_size": 128,
                 "target_kl": 0.02,
                 "entropy_coef": 0.01,
-                "cost_limit": 25.0,
+                "cost_limit": 100.0,
+                "use_max_grad_norm": True,
+                "max_grad_norm": 0.5,
                 "gamma": 0.99,
                 "cost_gamma": 0.99,
                 "lam": 0.95,
@@ -423,10 +455,13 @@ class TrainerCPO:
                 "cg_damping": 0.1,
                 "cg_iters": 15,
                 "use_cost": True,
+                "obs_normalize": True,
+                "reward_normalize": True,
+                "cost_normalize": True,
             },
             "model_cfgs": {
-                "actor": {"hidden_sizes": [64, 64], "activation": "tanh"},
-                "critic": {"hidden_sizes": [64, 64], "activation": "tanh", "lr": 0.001},
+                "actor": {"hidden_sizes": [256, 256], "activation": "tanh"},
+                "critic": {"hidden_sizes": [256, 256], "activation": "tanh", "lr": 3e-4},
             },
             "logger_cfgs": {
                 "use_wandb": False,
