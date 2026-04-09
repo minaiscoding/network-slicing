@@ -28,8 +28,8 @@ from scenario_creator import create_env_from_config
 
 RUNS                = 30
 PROCESSES           = 4
-STEPS_PER_SCENARIO  = [5000, 10000, 5000]   # low 250s, medium 500s, congested 250s (500 slots/step @ 0.1ms)
-TOTAL_STEPS         = 20000
+STEPS_PER_SCENARIO  = [125000, 250000, 125000]   # low, medium, congested (total 500k)
+TOTAL_STEPS         = 500000
 PENALTY             = 1000
 SCENARIOS           = ['low', 'medium', 'congested']
 SLOTS_PER_STEP      = 500
@@ -377,8 +377,8 @@ class TrainerCPONoForecast:
                 "use_cost": True,
             },
             "model_cfgs": {
-                "actor": {"hidden_sizes": [64, 64], "activation": "tanh"},
-                "critic": {"hidden_sizes": [64, 64], "activation": "tanh", "lr": 0.001},
+                "actor": {"hidden_sizes": [128, 128], "activation": "tanh"},
+                "critic": {"hidden_sizes": [128, 128], "activation": "tanh", "lr": 0.001},
             },
             "logger_cfgs": {
                 "use_wandb": False,
