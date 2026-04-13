@@ -6,7 +6,36 @@ from pathlib import Path
 # =========================
 # Your scenarios
 # =========================
+scenario_3gnb_overlap = {
+    'n_gnbs': 3,
 
+    'max_prbs_per_gnb': [150, 150, 150],
+
+    # Triangle layout → strong central overlap
+    'gnb_positions': [
+        (0.0, 0.0),        # gNB 0
+        (400.0, 0.0),      # gNB 1
+        (200.0, 350.0),    # gNB 2
+    ],
+
+    # Large enough radius → overlapping region in the middle
+    'coverage_radius': [350.0, 350.0, 350.0],
+
+    # Same carrier → interference + realistic competition
+    'carrier_ids': [1, 0, 0],
+
+    # Number of UEs
+    'n_ues': 200,
+
+    # You can switch later to "uniform"
+    'ue_distribution': 'clustered',
+
+    'slices': [
+        {'type': 'eMBB', 'count': 2},
+        {'type': 'mMTC', 'count': 1},
+        {'type': 'URLLC', 'count': 1},
+    ]
+}
 scenario_1 = {
     'n_gnbs': 20,
     'max_prbs_per_gnb': [150] * 20,
@@ -114,6 +143,7 @@ scenario_dense_20 = {
 }
 
 scenarios = {
+    "senario3gb":scenario_3gnb_overlap,
     "scenario_1": scenario_1,
     "scenario_2": scenario_2,
     "scenario_3": scenario_3,

@@ -478,6 +478,42 @@ class NodeB:
             f'bw={self.bandwidth_hz / 1e6:.1f}MHz'
         )
 
+    def get_l1_slice_for_type(self, slice_type: str):
+        wanted = (slice_type or "eMBB").upper()
+
+        for s in self.slices_l1:
+            st = getattr(s, "type", "").upper()
+            if wanted == "URLLC" and st == "URLLC":
+                return s
+            if wanted == "MMTC" and st == "MMTC":
+                return s
+            if wanted == "EMBB" and st == "EMBB":
+                return s
+
+        # fallback: use eMBB slice for unknown broadband-like traffic
+        for s in self.slices_l1:
+            if getattr(s, "type", "").upper() == "EMBB":
+                return s
+
+        return None
+
+    def attach_ue(self, ue):
+        l1 = self.get_l1_slice_for_type(getattr(ue, "slice_type", "eMBB"))
+        if l1 is None:
+            raise ValueError(f"No compatible L1 slice in gNB {self.id} for UE slice_type={ue.slice_type}")
+        l1.add_users([ue])
+
+    def detach_ue(self, ue_id: int):
+        for s in self.slices_l1:
+            if hasattr(s, "extract_users"):
+                s.extract_users([ue_id])
+
+    def count_attached_rl_ues(self) -> int:
+        total = 0
+        for s in self.slices_l1:
+            if hasattr(s, "ues"):
+                total += len(s.ues)
+        return total
 if __name__ == '__main__':
     from numpy.random import default_rng
     from itertools import count

@@ -370,6 +370,7 @@ def create_multignb_env(
     handover_penalty: float = 0.1,
     use_mean_gnb_reward: bool = True,
     verbose: bool = False,
+    max_episode_steps: int = 100,
 ):
     if MultiGNBWrapper is None:
         raise ImportError(
@@ -410,6 +411,7 @@ def create_multignb_env(
         handover_penalty=handover_penalty,
         use_mean_gnb_reward=use_mean_gnb_reward,
         verbose=verbose,
+        max_episode_steps=max_episode_steps,
     )
 
 
@@ -434,6 +436,7 @@ def create_env(
     handover_penalty: float = 0.1,
     use_mean_gnb_reward: bool = True,
     verbose: bool = False,
+    max_episode_steps: int = 100,
 ):
     """
     Create either the legacy single-gNB env or the new multi-gNB env.
@@ -461,6 +464,7 @@ def create_env(
             handover_penalty=handover_penalty,
             use_mean_gnb_reward=use_mean_gnb_reward,
             verbose=verbose,
+            max_episode_steps=max_episode_steps,
         )
 
     node = create_nodeb(

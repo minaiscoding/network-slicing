@@ -51,7 +51,7 @@ from slice_ran import SliceRANeMBB, SliceRANmMTC, SliceRANURLC
 class SimConfig:
     scenario_name: str = "senario3gb"
     seed: int = 42
-    n_ues: int = 5
+    n_ues: int = 120
     n_steps: int = 300
     slots_per_step: int = 10
     step_dt: float = 1e-3
@@ -211,15 +211,12 @@ def build_gnbs_from_scenario(cfg: SimConfig) -> List[NodeB]:
 
     gnbs: List[NodeB] = []
     for i, ((x, y), radius, carrier_id, prbs) in enumerate(
-            zip(sc["gnb_positions"], sc["coverage_radius"], sc["carrier_ids"], sc["max_prbs_per_gnb"])
+        zip(sc["gnb_positions"], sc["coverage_radius"], sc["carrier_ids"], sc["max_prbs_per_gnb"])
     ):
         l1_slices = [
-            build_embb_slice(rng, user_counter, slice_id=10 * i + 0, slots_per_step=cfg.slots_per_step,
-                             n_prbs=max(prbs // 2, 1)),
-            build_urllc_slice(rng, user_counter, slice_id=10 * i + 1, slots_per_step=cfg.slots_per_step,
-                              n_prbs=max(prbs // 4, 1)),
-            build_mmtc_slice(rng, slice_id=10 * i + 2, slots_per_step=cfg.slots_per_step,
-                             n_prbs=max(prbs - (prbs // 2) - (prbs // 4), 1)),
+            build_embb_slice(rng, user_counter, slice_id=10 * i + 0, slots_per_step=cfg.slots_per_step, n_prbs=max(prbs // 2, 1)),
+            build_urllc_slice(rng, user_counter, slice_id=10 * i + 1, slots_per_step=cfg.slots_per_step, n_prbs=max(prbs // 4, 1)),
+            build_mmtc_slice(rng, slice_id=10 * i + 2, slots_per_step=cfg.slots_per_step, n_prbs=max(prbs - (prbs // 2) - (prbs // 4), 1)),
         ]
 
         gnb = NodeB(
@@ -247,44 +244,51 @@ def build_gnbs_from_scenario(cfg: SimConfig) -> List[NodeB]:
 # -----------------------------------------------------------------------------
 
 def generate_overlap_ues(env: MultiGNBWrapper, cfg: SimConfig):
+    rng = np.random.default_rng(cfg.seed + 123)
     sc = scenarios[cfg.scenario_name]
     positions = sc["gnb_positions"]
     xs = np.array([p[0] for p in positions], dtype=float)
     ys = np.array([p[1] for p in positions], dtype=float)
 
-    # Deterministic multi-UE trajectories:
-    # all UEs go left -> right, but with different vertical offsets and speeds,
-    # so each one experiences the coverage / overlap zones a bit differently.
-    start_x = float(xs.min() - 500.0)
-    end_x = float(xs.max() + 500.0)
-    total_time = cfg.n_steps * cfg.step_dt
+    center_x = float(xs.mean())
+    center_y = float(ys.mean())
 
-    y_offsets = [-180.0, -90.0, 0.0, 90.0, 180.0]
-    speed_scales = [0.85, 0.95, 1.00, 1.08, 1.18]
-    slice_types = ["eMBB", "URLLC", "eMBB", "URLLC", "eMBB"]
+    slice_choices = ["eMBB", "eMBB", "URLLC", "mMTC"]
     bit_rate_map = {
         "eMBB": 4_000_000.0,
         "URLLC": 2_000_000.0,
+        "mMTC": 200_000.0,
     }
 
-    for i in range(cfg.n_ues):
-        y_offset = y_offsets[i % len(y_offsets)]
-        speed_scale = speed_scales[i % len(speed_scales)]
-        slice_type = slice_types[i % len(slice_types)]
+    for _ in range(cfg.n_ues):
+        # Most users near the overlap center, some around edges.
+        if rng.random() < 0.7:
+            x = rng.normal(center_x, 90.0)
+            y = rng.normal(center_y, 90.0)
+        else:
+            ref = rng.integers(len(positions))
+            x = rng.normal(xs[ref], 120.0)
+            y = rng.normal(ys[ref], 120.0)
 
-        start_y = float(ys.mean() + y_offset)
-        vx = ((end_x - start_x) / total_time) * speed_scale
-        vy = 0.0
+        vx = rng.uniform(-12.0, 12.0)
+        vy = rng.uniform(-12.0, 12.0)
+        slice_type = slice_choices[rng.integers(len(slice_choices))]
+        bit_rate = bit_rate_map[slice_type]
+        buffer_size = 2_000_000 if slice_type != "mMTC" else 200_000
 
-        env.add_ue(
-            x=start_x,
-            y=start_y,
-            vx=float(vx),
-            vy=float(vy),
-            slice_type=slice_type,
-            bit_rate=bit_rate_map[slice_type],
-            buffer_size=2_000_000 if slice_type == "eMBB" else 800_000,
-        )
+        try:
+            env.add_ue(
+                x=float(x),
+                y=float(y),
+                vx=float(vx),
+                vy=float(vy),
+                slice_type=slice_type,
+                bit_rate=bit_rate,
+                buffer_size=buffer_size,
+            )
+        except ValueError:
+            # Skip rare incompatible placements / types if any slice mismatch happens.
+            continue
 
 
 # -----------------------------------------------------------------------------
@@ -306,28 +310,7 @@ def safe_no_handover_step(env: MultiGNBWrapper) -> Dict:
         else:
             ue.wait_time = max(ue.wait_time - 1, 0)
 
-    # Dynamic attach/detach for this trajectory test.
-    # This lets the UE start outside coverage, connect when entering,
-    # experience overlap, and disconnect after leaving all cells.
-    for ue in env.get_all_ues():
-        best = env._find_best_gnb_for_ue(ue)
-        previous_serving = ue.serving_gnb
-        new_serving = best.id if best is not None else None
-
-        if previous_serving != new_serving:
-            old_gnb = env._get_gnb_by_id(previous_serving) if previous_serving is not None else None
-            if old_gnb is not None:
-                old_gnb.detach_ue(ue.id)
-
-            ue.serving_gnb = new_serving
-            ue.connected = new_serving is not None
-
-            if best is not None:
-                best.attach_ue(ue)
-        else:
-            ue.connected = new_serving is not None
-
-    # Simulate radio + service after connectivity update.
+    # Keep current serving cells and just simulate radio + service.
     env._simulate_radio_and_service()
 
     # Log a basic reward from current control UE if available.
@@ -370,10 +353,8 @@ def collect_step_metrics(env: MultiGNBWrapper, step: int) -> Tuple[Dict, List[Di
         "max_queue_bits": float(np.max([ue.queue for ue in ues])) if ues else 0.0,
         "mean_wait_steps": float(np.mean([ue.wait_time for ue in ues])) if ues else 0.0,
         "p95_wait_steps": float(np.percentile([ue.wait_time for ue in ues], 95)) if ues else 0.0,
-        "mean_sinr_db": float(
-            np.mean([r["sinr_db"] for r in radio_rows if np.isfinite(r["sinr_db"])])) if radio_rows else -np.inf,
-        "mean_snr_db": float(
-            np.mean([r["snr_db"] for r in radio_rows if np.isfinite(r["snr_db"])])) if radio_rows else -np.inf,
+        "mean_sinr_db": float(np.mean([r["sinr_db"] for r in radio_rows if np.isfinite(r["sinr_db"])])) if radio_rows else -np.inf,
+        "mean_snr_db": float(np.mean([r["snr_db"] for r in radio_rows if np.isfinite(r["snr_db"])])) if radio_rows else -np.inf,
     }
 
     serving_counts: Dict[int, int] = {}
@@ -418,10 +399,8 @@ def summarize_results(step_df: pd.DataFrame, ue_df: pd.DataFrame) -> pd.DataFram
         "mean_queue_bits": float(step_df["mean_queue_bits"].mean()),
         "legacy_mean_wait_steps": float(step_df["mean_wait_steps"].mean()),
         "legacy_p95_wait_steps_over_time": float(step_df["p95_wait_steps"].mean()),
-        "mean_packet_delay_steps": float(
-            step_df["mean_packet_delay_steps"].dropna().mean()) if "mean_packet_delay_steps" in step_df else np.nan,
-        "p95_packet_delay_steps_over_time": float(
-            step_df["p95_packet_delay_steps"].dropna().mean()) if "p95_packet_delay_steps" in step_df else np.nan,
+        "mean_packet_delay_steps": float(step_df["mean_packet_delay_steps"].dropna().mean()) if "mean_packet_delay_steps" in step_df else np.nan,
+        "p95_packet_delay_steps_over_time": float(step_df["p95_packet_delay_steps"].dropna().mean()) if "p95_packet_delay_steps" in step_df else np.nan,
         "mean_connected_ues": float(step_df["connected_ues"].mean()),
         "final_connected_ues": int(final_step["connected_ues"]),
         "final_disconnected_ues": int(final_step["disconnected_ues"]),
@@ -434,103 +413,6 @@ def summarize_results(step_df: pd.DataFrame, ue_df: pd.DataFrame) -> pd.DataFram
 # -----------------------------------------------------------------------------
 # Plotting
 # -----------------------------------------------------------------------------
-
-def save_start_end_positions(env: MultiGNBWrapper, start_positions: Dict[int, Tuple[float, float]], save_dir: Path):
-    plt.figure(figsize=(8, 8))
-
-    # Plot gNB locations and hexagonal coverage.
-    for gnb in env.gnbs:
-        vertices = np.array(gnb.vertices + [gnb.vertices[0]])
-        plt.plot(vertices[:, 0], vertices[:, 1], linestyle="--")
-        plt.scatter([gnb.x], [gnb.y], marker="^", s=120)
-        plt.text(gnb.x, gnb.y, f"gNB {gnb.id}")
-
-    # Plot each UE start -> end trajectory.
-    for ue in env.get_all_ues():
-        if ue.id not in start_positions:
-            continue
-        x0, y0 = start_positions[ue.id]
-        x1, y1 = ue.x, ue.y
-        plt.scatter([x0], [y0], marker="o", s=80)
-        plt.scatter([x1], [y1], marker="x", s=100)
-        plt.plot([x0, x1], [y0, y1], linewidth=1.5)
-        plt.text(x0, y0, f"UE {ue.id} start", fontsize=8)
-        plt.text(x1, y1, f"UE {ue.id} end", fontsize=8)
-
-    plt.xlabel("x")
-    plt.ylabel("y")
-    plt.title("UE Start and End Positions")
-    plt.axis("equal")
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(save_dir / "ue_start_end_positions.png", dpi=200)
-    plt.close()
-
-
-def save_per_ue_plots(ue_df: pd.DataFrame, save_dir: Path):
-    if ue_df.empty:
-        return
-
-    for ue_id, ue_hist in ue_df.groupby("ue_id"):
-        ue_hist = ue_hist.sort_values("step")
-
-        plt.figure(figsize=(10, 5))
-        plt.plot(ue_hist["step"], ue_hist["throughput_bps"])
-        plt.xlabel("Step")
-        plt.ylabel("Throughput (bps)")
-        plt.title(f"UE {ue_id} Throughput")
-        plt.grid(True)
-        plt.tight_layout()
-        plt.savefig(save_dir / f"ue_{ue_id}_throughput.png", dpi=200)
-        plt.close()
-
-        plt.figure(figsize=(10, 5))
-        plt.plot(ue_hist["step"], ue_hist["queue_bits"])
-        plt.xlabel("Step")
-        plt.ylabel("Queue (bits)")
-        plt.title(f"UE {ue_id} Queue")
-        plt.grid(True)
-        plt.tight_layout()
-        plt.savefig(save_dir / f"ue_{ue_id}_queue.png", dpi=200)
-        plt.close()
-
-        plt.figure(figsize=(10, 5))
-        plt.plot(ue_hist["step"], ue_hist["sinr_db"])
-        plt.xlabel("Step")
-        plt.ylabel("SINR (dB)")
-        plt.title(f"UE {ue_id} SINR")
-        plt.grid(True)
-        plt.tight_layout()
-        plt.savefig(save_dir / f"ue_{ue_id}_sinr.png", dpi=200)
-        plt.close()
-
-        if "mean_packet_delay_steps" in ue_hist.columns:
-            plt.figure(figsize=(10, 5))
-            plt.plot(ue_hist["step"], ue_hist["mean_packet_delay_steps"])
-            plt.xlabel("Step")
-            plt.ylabel("Mean packet delay (steps)")
-            plt.title(f"UE {ue_id} Packet Delay")
-            plt.grid(True)
-            plt.tight_layout()
-            plt.savefig(save_dir / f"ue_{ue_id}_delay.png", dpi=200)
-            plt.close()
-
-    plt.figure(figsize=(9, 7))
-    for ue_id, ue_hist in ue_df.groupby("ue_id"):
-        ue_hist = ue_hist.sort_values("step")
-        plt.plot(ue_hist["x"], ue_hist["y"], label=f"UE {ue_id}")
-        plt.scatter([ue_hist.iloc[0]["x"]], [ue_hist.iloc[0]["y"]], marker="o", s=40)
-        plt.scatter([ue_hist.iloc[-1]["x"]], [ue_hist.iloc[-1]["y"]], marker="x", s=60)
-    plt.xlabel("x")
-    plt.ylabel("y")
-    plt.title("UE Trajectories")
-    plt.axis("equal")
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(save_dir / "ue_trajectories.png", dpi=200)
-    plt.close()
-
 
 def save_plots(step_df: pd.DataFrame, save_dir: Path):
     plt.figure(figsize=(10, 5))
@@ -615,10 +497,6 @@ def main():
 
     print(f"[INFO] Number of gNBs: {len(gnbs)}")
     print(f"[INFO] Number of UEs inserted: {len(env.get_all_ues())}")
-    print(
-        "[INFO] 5 mobile UEs are simulated and tracked individually: each starts outside coverage, enters the network, crosses the overlap zone, then exits coverage again.")
-
-    start_positions = {ue.id: (ue.x, ue.y) for ue in env.get_all_ues()}
 
     packet_queues: Dict[int, deque] = defaultdict(deque)
     ue_delay_samples: Dict[int, List[float]] = defaultdict(list)
@@ -651,8 +529,7 @@ def main():
 
         step_row, ue_step_rows = collect_step_metrics(env, step)
         step_row["mean_packet_delay_steps"] = float(np.mean(system_delay_samples)) if system_delay_samples else np.nan
-        step_row["p95_packet_delay_steps"] = float(
-            np.percentile(system_delay_samples, 95)) if system_delay_samples else np.nan
+        step_row["p95_packet_delay_steps"] = float(np.percentile(system_delay_samples, 95)) if system_delay_samples else np.nan
 
         for row in ue_step_rows:
             samples = ue_delay_samples.get(row["ue_id"], [])
@@ -665,8 +542,7 @@ def main():
         ue_rows.extend(ue_step_rows)
 
         if step % 25 == 0 or step == 1 or step == cfg.n_steps:
-            delay_txt = "nan" if np.isnan(
-                step_row["mean_packet_delay_steps"]) else f"{step_row['mean_packet_delay_steps']:.2f}"
+            delay_txt = "nan" if np.isnan(step_row["mean_packet_delay_steps"]) else f"{step_row['mean_packet_delay_steps']:.2f}"
             print(
                 f"[step {step:4d}] "
                 f"thr_sum={step_row['sum_throughput_bps']:.2f} bps | "
@@ -691,8 +567,6 @@ def main():
 
     if cfg.add_plots:
         save_plots(step_df, save_dir)
-        save_start_end_positions(env, start_positions, save_dir)
-        save_per_ue_plots(ue_df, save_dir)
 
     print("\n[INFO] Simulation complete.")
     print(f"[INFO] Step metrics saved to   : {step_csv}")

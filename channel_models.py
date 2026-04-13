@@ -192,7 +192,7 @@ class SINRSelectiveFading:
         return fading_vector + self.users[user_id]['nominal_sinr'] # this is a column array
         
     def extract_user(self, user_id):
-        self.users.pop(user_id)
+        self.users.pop(user_id,None)
 
 
 class SNRGenerator:

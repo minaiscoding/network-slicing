@@ -128,14 +128,16 @@ class SliceL1eMBB:
     ''' 
     Layer 1 functionality for eMBB slices. It can multiplex several eMBB slices.
     '''
-    def __init__(self, rng, snr_generator, n_prbs, slices_ran, scheduler):
+
+    def __init__(self, rng, snr_generator, n_prbs, slices_ran, scheduler, external_ues=False):
         self.type = 'eMBB'
         self.rng = rng
         self.snr_generator = snr_generator
         self.n_prbs = n_prbs
-        self.prb_slice = slice(0,n_prbs)
+        self.prb_slice = slice(0, n_prbs)
         self.slices_ran = slices_ran
         self.scheduler = scheduler
+        self.external_ues = external_ues
         self.reset()
 
     def set_prbs(self, i_prb, n_prbs):
@@ -191,41 +193,33 @@ class SliceL1eMBB:
         self.ues = [ue for ue in self.ues if ue.id not in ue_id_list]
 
     def slot(self):
-        # generate arrivals and departures for each slice ran
-        for slice_ran in self.slices_ran:
-            arrivals, departures = slice_ran.slot()
-            self.extract_users(departures)
-            self.add_users(arrivals)
+        if not self.external_ues:
+            for slice_ran in self.slices_ran:
+                arrivals, departures = slice_ran.slot()
+                self.extract_users(departures)
+                self.add_users(arrivals)
 
         queued_data = 0
         for ue in self.ues:
-            # data arrival
             ue.traffic_step()
-            # update queued_data
             queued_data += ue.queue
+
             if self.n_prbs > 0:
                 snr = self.snr_generator.get_snr(ue.id)
-                try:
-                    ue.estimate_snr(snr[self.prb_slice])
-                except:
-                    print('problem with snr estimation!')
-                    print('prb_slice = {}'.format(self.prb_slice))
-                    print('snr vector = {}'.format(snr[self.prb_slice]))
+                ue.estimate_snr(snr[self.prb_slice])
 
         if queued_data > 0 and self.n_prbs > 0:
-            # scheduling
             self.scheduler.allocate(self.ues, self.n_prbs)
 
             for ue in self.ues:
-                # transmission and ue update
                 received = False
                 if ue.prbs:
                     received = self.rng.random() < ue.p
                 ue.transmission_step(received)
 
-        # update slice_ran info
         for slice_ran in self.slices_ran:
-            slice_ran.update_info()
+            if hasattr(slice_ran, "update_info"):
+                slice_ran.update_info()
 
 class SliceL1URLLC(SliceL1eMBB):
     '''

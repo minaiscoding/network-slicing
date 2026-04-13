@@ -1,25 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-multi_gnb_wrapper.py
+from __future__ import annotations
 
-Multi-gNodeB Gymnasium environment wrapper for multiple NodeB objects.
+from typing import Dict, List, Optional, Tuple
+import math
 
-This version stores real UE objects instead of plain dictionaries.
-"""
-
-from typing import List, Dict, Optional
-import numpy as np
 import gymnasium as gym
-from gymnasium import spaces
+import numpy as np
 
-from slice_ran import UE
+from slice_ran import UE, CBR
 from traffic_generators import CbrSource
 
 
 class MultiGNBWrapper(gym.Env):
-    metadata = {"render_modes": ["human"]}
+    """
+    Prototype multi-gNB RL wrapper for UE reassociation / traffic steering.
+
+    Observation (23 dims):
+    [
+        ue_x, ue_y, ue_vx, ue_vy, ue_speed, ue_queue, ue_th,
+        serving_sinr, serving_load, serving_dist, serving_approach,
+        cand1_sinr, cand1_load, cand1_dist, cand1_approach,
+        cand2_sinr, cand2_load, cand2_dist, cand2_approach,
+        cand3_sinr, cand3_load, cand3_dist, cand3_approach
+    ]
+    """
+
+    metadata = {"render_modes": []}
 
     def __init__(
         self,
@@ -30,144 +38,203 @@ class MultiGNBWrapper(gym.Env):
         handover_penalty: float = 0.1,
         use_mean_gnb_reward: bool = True,
         verbose: bool = False,
+        step_dt: float = 1e-3,
+        max_candidates: int = 3,
+        max_episode_steps: int = 100,
     ):
         super().__init__()
 
-        if gnb_list is None or len(gnb_list) == 0:
-            raise ValueError("gnb_list must contain at least one NodeB.")
+        if not gnb_list:
+            raise ValueError("gnb_list must contain at least one gNB")
 
-        self.gnbs: List = gnb_list
-        self.n_gnbs: int = len(self.gnbs)
-        self.verbose: bool = verbose
+        self.gnbs = list(gnb_list)
+        self.n_gnbs = len(self.gnbs)
+        self.history = []
+        self.handover_hysteresis = float(handover_hysteresis)
+        self.handover_ttt = int(handover_ttt)
+        self.outage_penalty = float(outage_penalty)
+        self.handover_penalty = float(handover_penalty)
+        self.use_mean_gnb_reward = bool(use_mean_gnb_reward)
+        self.verbose = bool(verbose)
+        self.step_dt = float(step_dt)
+        self.max_candidates = int(max_candidates)
+        self.max_episode_steps = int(max_episode_steps)
 
-        self.handover_hysteresis: float = handover_hysteresis
-        self.handover_ttt: int = handover_ttt
-        self.outage_penalty: float = outage_penalty
-        self.handover_penalty: float = handover_penalty
-        self.use_mean_gnb_reward: bool = use_mean_gnb_reward
+        self.action_space = gym.spaces.Discrete(1 + self.max_candidates)
 
-        first_slots = self.gnbs[0].slots_per_step
-        first_slot_length = self.gnbs[0].slot_length
-        for gnb in self.gnbs:
-            if gnb.slots_per_step != first_slots:
-                raise ValueError("All gNodeBs must have the same slots_per_step.")
-            if gnb.slot_length != first_slot_length:
-                raise ValueError("All gNodeBs must have the same slot_length.")
-
-        self.slots_per_step: int = first_slots
-        self.slot_length: float = first_slot_length
-        self.dt: float = self.slots_per_step * self.slot_length
-
-        self._n_slices_per_gnb: List[int] = [gnb.n_slices_l1 for gnb in self.gnbs]
-        self._total_action_dim: int = sum(self._n_slices_per_gnb)
-
-        self._gnb_state_dims = [len(gnb.get_state()) for gnb in self.gnbs]
-        self._gnb_obs_dim = sum(self._gnb_state_dims)
-
-        self._global_extra_dim = 4 + self.n_gnbs
-        self._obs_dim = self._gnb_obs_dim + self._global_extra_dim
-
-        self.observation_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(self._obs_dim,),
+        self.observation_space = gym.spaces.Box(
+            low=-1e9,
+            high=1e9,
+            shape=(23,),
             dtype=np.float32,
         )
 
-        self.action_space = spaces.Box(
-            low=0.0,
-            high=1.0,
-            shape=(self._total_action_dim,),
-            dtype=np.float32,
-        )
-
+        self._rng = np.random.default_rng()
+        self._next_ue_id = 0
         self._ues: Dict[int, UE] = {}
-        self._next_ue_id: int = 0
+        self._current_control_ue_id: Optional[int] = None
+        self._round_robin_order: List[int] = []
+        self._rr_index = 0
+        self._step_count = 0
 
-        self.handover_log: List[Dict] = []
-        self.step_count: int = 0
-        self.last_step_handover_count: int = 0
+        self._handover_target_counter: Dict[int, Dict[int, int]] = {}
+        self._last_serving_gnb: Dict[int, Optional[int]] = {}
+        self._prev_serving_gnb: Dict[int, Optional[int]] = {}
+
+        self._last_candidates: List[int] = []
+        self._last_info: Dict = {}
+        self._last_reward_breakdown: Dict = {}
 
     # ------------------------------------------------------------------
     # Gym API
     # ------------------------------------------------------------------
 
-    def reset(self, seed=None, options=None):
+    def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
-
-        self.step_count = 0
-        self.last_step_handover_count = 0
-        self.handover_log.clear()
-        self._ues.clear()
-        self._next_ue_id = 0
-
+        if seed is not None:
+            self._rng = np.random.default_rng(seed)
+        self.history = []
+        self._step_count = 0
+        self._current_control_ue_id = None
+        self._rr_index = 0
+        self._last_candidates = []
+        self._last_info = {}
+        self._last_reward_breakdown = {}
+        self.handover_events = []
         for gnb in self.gnbs:
-            gnb.reset()
+            if hasattr(gnb, "reset"):
+                gnb.reset()
 
-        obs = self._get_obs()
+        for ue in self._ues.values():
+            ue.queue = 0
+            ue.th = 0.0
+            ue.bits = 0
+            ue.new_bits = 0
+            ue.dropped_bits = 0
+            ue.total_bits_arrived = 0
+            ue.wait_time = 0
+            ue.snr = 0
+            ue.e_snr = 0
+            ue.sinr = 0
+            ue.e_sinr = 0
+            ue.prbs = 0
+            ue.p = 0
+            ue.connected = True
+            ue.target_gnb = None
+            ue.ho_pending = False
+            ue.ho_candidate = None
+            ue.ho_counter = 0
+            ue.serving_power_dbm = -np.inf
+            ue.interference_dbm = -np.inf
+            ue.noise_dbm = -np.inf
+
+            best = self._find_best_gnb_for_ue(ue)
+            ue.serving_gnb = best.id if best is not None else None
+            ue.connected = ue.serving_gnb is not None
+            self._ues[ue.id] = ue
+
+            if best is not None:
+                best.attach_ue(ue)
+            self._handover_target_counter[ue.id] = {}
+            self._last_serving_gnb[ue.id] = ue.serving_gnb
+            self._prev_serving_gnb[ue.id] = None
+
+        self._refresh_round_robin_order()
+        self._current_control_ue_id = self._pick_next_control_ue()
+
+        obs = self._get_observation_for_current_ue()
         info = self._build_info(per_gnb_rewards=[0.0] * self.n_gnbs)
+        self._last_info = info
         return obs, info
 
     def step(self, action):
-        action = self._validate_action(action)
+        self._step_count += 1
 
-        self._update_ue_positions()
-        self.last_step_handover_count = 0
-        self._check_handovers()
-        self._update_all_ue_radio_states()
+        per_gnb_rewards = self._advance_gnbs()
 
-        gnb_actions = self._split_action(action)
+        if not self._ues:
+            obs = np.zeros(self.observation_space.shape, dtype=np.float32)
+            reward = 0.0
+            terminated = False
+            truncated = self._step_count >= self.max_episode_steps
+            info = self._build_info(per_gnb_rewards=per_gnb_rewards)
+            self._last_info = info
+            return obs, reward, terminated, truncated, info
 
-        per_gnb_rewards = []
-        per_gnb_infos = {}
+        if self._current_control_ue_id is None or self._current_control_ue_id not in self._ues:
+            self._current_control_ue_id = self._pick_next_control_ue()
 
-        for i, (gnb, gnb_action) in enumerate(zip(self.gnbs, gnb_actions)):
-            _, info = gnb.step(gnb_action)
-            per_gnb_infos[f"gnb_{i}"] = info
+        ue = self._ues[self._current_control_ue_id]
 
-            reward_labels, _ = gnb.compute_reward()
-            local_reward = float(np.mean(reward_labels))
-            per_gnb_rewards.append(local_reward)
+        for tracked_ue in self._ues.values():
+            tracked_ue.update_position(self.step_dt)
+            tracked_ue.traffic_step()
+            if tracked_ue.queue > 0:
+                tracked_ue.wait_time += 1
+            else:
+                tracked_ue.wait_time = max(tracked_ue.wait_time - 1, 0)
 
-        reward = self._compute_global_reward(per_gnb_rewards)
+        candidates = self.get_candidate_gnbs(ue, top_k=self.max_candidates)
+        self._last_candidates = [g.id for g in candidates]
 
-        obs = self._get_obs()
-        info = self._build_info(per_gnb_rewards=per_gnb_rewards)
-        info["per_gnb_info"] = per_gnb_infos
+        target_gnb = self._interpret_action_for_ue(action, ue, candidates)
+        handover_done = self._apply_handover_logic(ue, target_gnb)
+        old_gnb = self._get_gnb_by_id(current_id) if current_id is not None else None
+        new_gnb = self._get_gnb_by_id(target_id) if target_id is not None else None
 
-        self.step_count += 1
+        if old_gnb is not None:
+            old_gnb.detach_ue(ue.id)
+
+        if new_gnb is not None:
+            new_gnb.attach_ue(ue)
+
+        ue.serving_gnb = target_id
+        ue.connected = new_gnb is not None
+        self._simulate_radio_and_service()
+
+        pingpong = self._is_ping_pong(ue)
+        reward = self.compute_reassociation_reward(
+            ue=ue,
+            target_gnb=self._get_gnb_by_id(ue.serving_gnb) if ue.serving_gnb is not None else None,
+            handover_done=handover_done,
+            pingpong=pingpong,
+        )
+
+        self._current_control_ue_id = self._pick_next_control_ue()
+        obs = self._get_observation_for_current_ue()
 
         terminated = False
-        truncated = False
-        return obs, reward, terminated, truncated, info
+        truncated = self._step_count >= int(self.max_episode_steps)
 
-    def render(self):
-        print(f"\n{'=' * 60}")
-        print(f"Step: {self.step_count}")
-        print(f"Tracked UEs: {len(self._ues)}")
-        print(f"Connected UEs: {self._count_connected_ues()}")
-        print(f"Disconnected UEs: {self._count_disconnected_ues()}")
-        print(f"Total handovers: {len(self.handover_log)}")
-        print(f"Handovers this step: {self.last_step_handover_count}")
-        print("-" * 60)
+        info = self._build_info(per_gnb_rewards=per_gnb_rewards)
+        info["current_control_ue_id"] = self._current_control_ue_id
+        info["last_action_candidates"] = self._last_candidates
+        self._last_info = info
+        self._log_step(float(reward))
+        return obs, float(reward), terminated, truncated, info
 
-        ue_counts = self._ue_count_per_gnb()
-        for i, gnb in enumerate(self.gnbs):
-            print(
-                f"gNB idx={i} id={gnb.id} "
-                f"pos=({gnb.x:.1f}, {gnb.y:.1f}) "
-                f"radius={gnb.coverage_radius:.1f} "
-                f"tracked_ues={ue_counts[i]} "
-                f"slices={gnb.n_slices_l1} "
-                f"n_prbs={gnb.n_prbs}"
-            )
-        print(f"{'=' * 60}")
+    def _log_step(self, reward: float):
+        row = {
+            "step": int(self._step_count),
+            "control_ue_id": self._current_control_ue_id,
+            "reward": float(reward),
+            "n_connected_ues": int(sum(1 for ue in self._ues.values() if ue.connected)),
+            "n_disconnected_ues": int(sum(1 for ue in self._ues.values() if not ue.connected)),
+        }
 
-    def close(self):
-        pass
+        for ue in self._ues.values():
+            row[f"ue{ue.id}_x"] = float(ue.x)
+            row[f"ue{ue.id}_y"] = float(ue.y)
+            row[f"ue{ue.id}_serving_gnb"] = -1 if ue.serving_gnb is None else int(ue.serving_gnb)
+            row[f"ue{ue.id}_sinr"] = float(ue.e_sinr if np.isfinite(ue.e_sinr) else -np.inf)
+            row[f"ue{ue.id}_throughput"] = float(ue.th)
+            row[f"ue{ue.id}_queue"] = float(ue.queue)
+            row[f"ue{ue.id}_connected"] = int(bool(ue.connected))
+            row[f"ue{ue.id}_handover_pending"] = int(bool(ue.ho_pending))
 
+        self.history.append(row)
     # ------------------------------------------------------------------
-    # Public UE management
+    # Public helpers
     # ------------------------------------------------------------------
 
     def add_ue(
@@ -177,410 +244,734 @@ class MultiGNBWrapper(gym.Env):
         vx: float = 0.0,
         vy: float = 0.0,
         slice_type: str = "eMBB",
-        slice_ran_id: int = 0,
-        traffic_source=None,
-        ue_type: int = 0,
-        window: int = 50,
+        bit_rate: float = 1_000_000.0,
+        buffer_size: float = np.inf,
+        **ue_kwargs,
     ) -> int:
-        """
-        Add a tracked UE as a real UE object.
-        """
         ue_id = self._next_ue_id
         self._next_ue_id += 1
 
-        if traffic_source is None:
-            traffic_source = CbrSource(bit_rate=500000, step_length=self.slot_length)
-
         ue = UE(
             id=ue_id,
-            slice_ran_id=slice_ran_id,
-            traffic_source=traffic_source,
-            type=ue_type,
+            slice_ran_id=0,
+            traffic_source=CbrSource(bit_rate=bit_rate, step_length=self.step_dt),
+            type=CBR,
             x=float(x),
             y=float(y),
             vx=float(vx),
             vy=float(vy),
-            window=window,
-            slot_length=self.slot_length,
+            slot_length=self.step_dt,
+            slice_type=slice_type,
+            buffer_size=buffer_size,
+            **ue_kwargs,
         )
 
-        # extra fields expected by wrapper
-        ue.slice_type = slice_type
-        ue.serving_gnb = self._best_gnb(ue.x, ue.y)
-        ue.target_gnb = None
+        best = self._find_best_gnb_for_ue(ue)
+        ue.serving_gnb = best.id if best is not None else None
         ue.connected = ue.serving_gnb is not None
-        ue.ho_pending = False
-        ue.ho_candidate = None
-        ue.ho_counter = 0
-        ue.sinr = 0.0
-        ue.e_sinr = 0.0
-        ue.serving_power_dbm = -np.inf
-        ue.interference_dbm = -np.inf
-        ue.noise_dbm = -np.inf
-        ue.dropped_bits = 0
-        ue.total_bits_arrived = 0
 
         self._ues[ue_id] = ue
-        self._update_ue_radio_state(ue)
+        self._handover_target_counter[ue_id] = {}
+        self._last_serving_gnb[ue_id] = ue.serving_gnb
+        self._prev_serving_gnb[ue_id] = None
 
-        if self.verbose:
-            print(
-                f"[UE added] ue_id={ue_id}, "
-                f"pos=({x:.2f},{y:.2f}), "
-                f"vel=({vx:.2f},{vy:.2f}), "
-                f"serving_gnb={ue.serving_gnb}"
-            )
+        self._refresh_round_robin_order()
+        if self._current_control_ue_id is None:
+            self._current_control_ue_id = ue_id
 
         return ue_id
 
-    def remove_ue(self, ue_id: int):
-        self._ues.pop(ue_id, None)
+    def get_ue(self, ue_id: int) -> UE:
+        return self._ues[ue_id]
 
-    def get_ue(self, ue_id: int) -> Optional[UE]:
-        return self._ues.get(ue_id, None)
+    def get_all_ues(self) -> List[UE]:
+        return list(self._ues.values())
 
-    def get_all_ues(self) -> Dict[int, UE]:
-        return self._ues
+    def get_ue_radio_metrics(self, ue_id: int) -> Dict[str, float]:
+        ue = self._ues[ue_id]
+        serving = self._get_gnb_by_id(ue.serving_gnb) if ue.serving_gnb is not None else None
 
-    def get_ues_by_slice(self, slice_type: str) -> List[UE]:
-        return [ue for ue in self._ues.values() if getattr(ue, "slice_type", None) == slice_type]
-
-    def get_ues_by_gnb(self, gnb_idx: int) -> List[UE]:
-        return [ue for ue in self._ues.values() if ue.serving_gnb == gnb_idx]
-
-    def get_ues_by_gnb_and_slice(self, gnb_idx: int, slice_type: str) -> List[UE]:
-        return [
-            ue for ue in self._ues.values()
-            if ue.serving_gnb == gnb_idx and getattr(ue, "slice_type", None) == slice_type
-        ]
-
-    # ------------------------------------------------------------------
-    # Core internal methods
-    # ------------------------------------------------------------------
-
-    def _validate_action(self, action) -> np.ndarray:
-        action = np.asarray(action, dtype=np.float32).flatten()
-
-        if action.shape[0] != self._total_action_dim:
-            raise ValueError(
-                f"Action has wrong size. "
-                f"Expected {self._total_action_dim}, got {action.shape[0]}."
-            )
-
-        if not np.all(np.isfinite(action)):
-            raise ValueError("Action contains non-finite values.")
-
-        action = np.clip(action, 0.0, 1.0)
-        return action
-
-    def _get_obs(self) -> np.ndarray:
-        gnb_parts = [gnb.get_state().astype(np.float32) for gnb in self.gnbs]
-
-        total_tracked = float(len(self._ues))
-        connected = float(self._count_connected_ues())
-        disconnected = float(self._count_disconnected_ues())
-        total_handover = float(len(self.handover_log))
-        ue_counts = np.array(self._ue_count_per_gnb(), dtype=np.float32)
-
-        global_features = np.array(
-            [total_tracked, connected, disconnected, total_handover],
-            dtype=np.float32
-        )
-
-        if len(gnb_parts) > 0:
-            obs = np.concatenate(gnb_parts + [global_features, ue_counts], axis=0)
-        else:
-            obs = np.concatenate([global_features, ue_counts], axis=0)
-
-        return obs.astype(np.float32)
-
-    def _split_action(self, action: np.ndarray) -> List[np.ndarray]:
-        result = []
-        idx = 0
-
-        for gnb, n_slices in zip(self.gnbs, self._n_slices_per_gnb):
-            raw = action[idx: idx + n_slices]
-            idx += n_slices
-
-            raw_sum = raw.sum()
-            if raw_sum <= 1e-12:
-                fractions = np.ones(n_slices, dtype=np.float32) / n_slices
-            else:
-                fractions = raw / raw_sum
-
-            prbs = np.floor(fractions * gnb.n_prbs).astype(int)
-
-            leftover = int(gnb.n_prbs - prbs.sum())
-            if leftover > 0:
-                order = np.argsort(fractions)[::-1]
-                for k in range(leftover):
-                    prbs[order[k % n_slices]] += 1
-
-            result.append(prbs)
-
-        return result
-
-    def _compute_global_reward(self, per_gnb_rewards: List[float]) -> float:
-        reward = 0.0
-
-        if self.use_mean_gnb_reward and len(per_gnb_rewards) > 0:
-            reward += float(np.mean(per_gnb_rewards))
-
-        n_tracked = max(len(self._ues), 1)
-        n_disconnected = self._count_disconnected_ues()
-
-        outage_term = self.outage_penalty * (n_disconnected / n_tracked)
-        ho_term = self.handover_penalty * self.last_step_handover_count
-
-        reward -= outage_term
-        reward -= ho_term
-
-        return float(reward)
-
-    def _build_info(self, per_gnb_rewards: List[float]) -> Dict:
-        info = {
-            "step": self.step_count,
-            "n_gnbs": self.n_gnbs,
-            "n_tracked_ues": len(self._ues),
-            "n_connected_ues": self._count_connected_ues(),
-            "n_disconnected_ues": self._count_disconnected_ues(),
-            "ue_per_gnb": self._ue_count_per_gnb(),
-            "handover_count_total": len(self.handover_log),
-            "handover_count_step": self.last_step_handover_count,
-            "per_gnb_rewards": per_gnb_rewards,
-            "interference_model": "same_carrier => interference, different_carrier => no_interference",
+        metrics = self._compute_link_metrics(serving, ue) if serving is not None else {
+            "rx_power_dbm": -np.inf,
+            "noise_dbm": -np.inf,
+            "interference_dbm": -np.inf,
+            "snr_db": -np.inf,
+            "sinr_db": -np.inf,
         }
-        return info
-
-    # ------------------------------------------------------------------
-    # Radio / interference / SINR
-    # ------------------------------------------------------------------
-
-    def _dbm_to_w(self, dbm: float) -> float:
-        return 10 ** ((dbm - 30.0) / 10.0)
-
-    def _w_to_dbm(self, w: float) -> float:
-        if w <= 0:
-            return -np.inf
-        return 10 * np.log10(w) + 30.0
-
-    def compute_serving_power_dbm(self, ue: UE) -> float:
-        serving_idx = ue.serving_gnb
-        if serving_idx is None:
-            return -np.inf
-
-        gnb = self.gnbs[serving_idx]
-        return gnb.get_received_power_dbm(ue.x, ue.y)
-
-    def compute_interference_dbm(self, ue: UE) -> float:
-        serving_idx = ue.serving_gnb
-        if serving_idx is None:
-            return -np.inf
-
-        serving_gnb = self.gnbs[serving_idx]
-        interf_w = 0.0
-
-        for i, gnb in enumerate(self.gnbs):
-            if i == serving_idx:
-                continue
-            if not serving_gnb.uses_same_carrier(gnb):
-                continue
-            if not gnb.is_point_in_coverage(ue.x, ue.y):
-                continue
-
-            interf_w += gnb.get_received_power_watts(ue.x, ue.y)
-
-        return self._w_to_dbm(interf_w)
-
-    def compute_sinr_db(self, ue: UE, rb_bandwidth_hz: Optional[float] = None) -> float:
-        serving_idx = ue.serving_gnb
-        if serving_idx is None:
-            return -np.inf
-
-        serving_gnb = self.gnbs[serving_idx]
-
-        signal_dbm = self.compute_serving_power_dbm(ue)
-        if not np.isfinite(signal_dbm):
-            return -np.inf
-
-        if rb_bandwidth_hz is None:
-            rb_bandwidth_hz = serving_gnb.get_rb_bandwidth_hz()
-
-        noise_dbm = serving_gnb.get_noise_power_dbm(rb_bandwidth_hz=rb_bandwidth_hz)
-        interf_dbm = self.compute_interference_dbm(ue)
-
-        signal_w = self._dbm_to_w(signal_dbm)
-        noise_w = self._dbm_to_w(noise_dbm)
-        interf_w = 0.0 if not np.isfinite(interf_dbm) else self._dbm_to_w(interf_dbm)
-
-        sinr_w = signal_w / (noise_w + interf_w)
-        return 10 * np.log10(sinr_w)
-
-    def _update_ue_radio_state(self, ue: UE):
-        if ue.serving_gnb is None:
-            ue.connected = False
-            ue.serving_power_dbm = -np.inf
-            ue.interference_dbm = -np.inf
-            ue.noise_dbm = -np.inf
-            ue.sinr = -np.inf
-            ue.e_sinr = -np.inf
-            return
-
-        serving_gnb = self.gnbs[ue.serving_gnb]
-        ue.connected = True
-        ue.serving_power_dbm = self.compute_serving_power_dbm(ue)
-        ue.interference_dbm = self.compute_interference_dbm(ue)
-        ue.noise_dbm = serving_gnb.get_noise_power_dbm()
-        ue.sinr = self.compute_sinr_db(ue)
-        ue.e_sinr = ue.sinr
-
-    def _update_all_ue_radio_states(self):
-        for ue in self._ues.values():
-            self._update_ue_radio_state(ue)
-
-    def get_ue_radio_metrics(self, ue_id: int) -> Dict:
-        ue = self._ues.get(ue_id)
-        if ue is None:
-            raise KeyError(f"UE {ue_id} not found.")
 
         return {
             "ue_id": ue.id,
-            "x": ue.x,
-            "y": ue.y,
-            "slice_type": getattr(ue, "slice_type", None),
             "serving_gnb": ue.serving_gnb,
-            "serving_power_dbm": ue.serving_power_dbm,
-            "interference_dbm": ue.interference_dbm,
-            "noise_dbm": ue.noise_dbm,
-            "sinr_db": ue.sinr,
-            "connected": ue.connected,
+            "connected": bool(ue.connected),
+            "x": float(ue.x),
+            "y": float(ue.y),
+            "vx": float(ue.vx),
+            "vy": float(ue.vy),
+            "queue": float(ue.queue),
+            "throughput": float(ue.th),
+            "snr_db": float(metrics["snr_db"]),
+            "sinr_db": float(metrics["sinr_db"]),
+            "rx_power_dbm": float(metrics["rx_power_dbm"]),
+            "noise_dbm": float(metrics["noise_dbm"]),
+            "interference_dbm": float(metrics["interference_dbm"]),
+            "target_gnb": ue.target_gnb,
+            "ho_pending": bool(ue.ho_pending),
+            "ho_candidate": ue.ho_candidate,
+            "ho_counter": int(ue.ho_counter),
         }
 
     # ------------------------------------------------------------------
-    # Mobility and handover
+    # Candidate selection and observation
     # ------------------------------------------------------------------
 
-    def _update_ue_positions(self):
-        for ue in self._ues.values():
-            ue.update_position(self.dt)
+    def get_candidate_gnbs(self, ue: UE, top_k: int = 3) -> List:
+        scored: List[Tuple[float, object]] = []
+        serving = self._get_gnb_by_id(ue.serving_gnb) if ue.serving_gnb is not None else None
 
-    def _best_gnb(self, x: float, y: float) -> Optional[int]:
-        best_idx = None
-        best_rx_dbm = -np.inf
-
-        for i, gnb in enumerate(self.gnbs):
-            if gnb.is_point_in_coverage(x, y):
-                rx_dbm = gnb.get_received_power_dbm(x, y)
-                if rx_dbm > best_rx_dbm:
-                    best_rx_dbm = rx_dbm
-                    best_idx = i
-
-        return best_idx
-
-    def _check_handovers(self):
-        for ue_id, ue in self._ues.items():
-            x = ue.x
-            y = ue.y
-
-            current = ue.serving_gnb
-            best = self._best_gnb(x, y)
-
-            if best is None:
-                if current is not None and self.verbose:
-                    print(f"[UE {ue_id}] left all coverage areas")
-
-                ue.serving_gnb = None
-                ue.connected = False
-                ue.ho_pending = False
-                ue.ho_candidate = None
-                ue.ho_counter = 0
-                ue.target_gnb = None
+        for gnb in self.gnbs:
+            if not self._is_in_coverage(gnb, ue):
                 continue
 
-            if current is None:
-                ue.serving_gnb = best
-                ue.connected = True
-                ue.ho_pending = False
-                ue.ho_candidate = None
-                ue.ho_counter = 0
-                ue.target_gnb = None
-
-                if self.verbose:
-                    print(f"[UE {ue_id}] attached to gNB {best} after re-entering coverage")
+            sinr_db = self._get_sinr_db(gnb, ue)
+            if not np.isfinite(sinr_db):
                 continue
 
-            if best == current:
-                ue.ho_pending = False
-                ue.ho_candidate = None
-                ue.ho_counter = 0
-                ue.target_gnb = None
+            scored.append((sinr_db, gnb))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        selected = []
+        seen = set()
+
+        if serving is not None and self._is_in_coverage(serving, ue):
+            selected.append(serving)
+            seen.add(serving.id)
+
+        for _, gnb in scored:
+            if gnb.id in seen:
+                continue
+            selected.append(gnb)
+            seen.add(gnb.id)
+            if len(selected) >= top_k + (1 if serving is not None else 0):
+                break
+
+        return selected[: top_k + 1]
+
+    def build_ue_observation(self, ue: UE, candidates: List) -> np.ndarray:
+        serving = self._get_gnb_by_id(ue.serving_gnb) if ue.serving_gnb is not None else None
+        alt_candidates = [g for g in candidates if serving is None or g.id != serving.id]
+        alt_candidates = alt_candidates[: self.max_candidates]
+
+        speed = self._get_speed(ue)
+
+        obs = [
+            float(ue.x),
+            float(ue.y),
+            float(ue.vx),
+            float(ue.vy),
+            float(speed),
+            float(ue.queue),
+            float(ue.th),
+        ]
+
+        if serving is not None and self._is_in_coverage(serving, ue):
+            serving_metrics = self._compute_link_metrics(serving, ue)
+            serving_sinr = serving_metrics["sinr_db"]
+            serving_load = self._estimate_gnb_load(serving.id)
+            serving_dist = self._get_distance(serving, ue)
+            serving_approach = self._get_approach_score(serving, ue)
+        else:
+            serving_sinr = -np.inf
+            serving_load = 1.0
+            serving_dist = 1e9
+            serving_approach = 0.0
+
+        obs.extend([
+            float(serving_sinr),
+            float(serving_load),
+            float(serving_dist),
+            float(serving_approach),
+        ])
+
+        for gnb in alt_candidates:
+            metrics = self._compute_link_metrics(gnb, ue)
+            cand_sinr = metrics["sinr_db"]
+            cand_load = self._estimate_gnb_load(gnb.id)
+            cand_dist = self._get_distance(gnb, ue)
+            cand_approach = self._get_approach_score(gnb, ue)
+
+            obs.extend([
+                float(cand_sinr),
+                float(cand_load),
+                float(cand_dist),
+                float(cand_approach),
+            ])
+
+        while len(obs) < 23:
+            obs.extend([float(-np.inf), 1.0, 1e9, 0.0])
+
+        return np.asarray(obs[:23], dtype=np.float32)
+
+    # ------------------------------------------------------------------
+    # Reward
+    # ------------------------------------------------------------------
+
+    def compute_reassociation_reward(
+        self,
+        ue: UE,
+        target_gnb,
+        handover_done: bool,
+        pingpong: bool,
+    ) -> float:
+        th_norm = self._clip01(ue.th / 1e7)
+        q_norm = self._clip01(ue.queue / 1e6)
+        w_norm = self._clip01(ue.wait_time / 100.0)
+
+        if target_gnb is None:
+            sinr_norm = 0.0
+            load_norm = 1.0
+        else:
+            metrics = self._compute_link_metrics(target_gnb, ue)
+            sinr_norm = self._normalize_sinr_db(metrics["sinr_db"])
+            load_norm = self._clip01(self._estimate_gnb_load(target_gnb.id))
+
+        ho_pen = 1.0 if handover_done else 0.0
+        pp_pen = 1.0 if pingpong else 0.0
+        outage = 0.0 if (target_gnb is not None and ue.connected) else 1.0
+
+        sla_term = self._slice_sla_bonus(ue, th_norm, w_norm, sinr_norm, load_norm)
+
+        reward_throughput = 3.0 * th_norm
+        reward_queue = -1.0 * q_norm
+        reward_delay = -0.5 * w_norm
+        reward_handover = -self.handover_penalty * ho_pen
+        reward_pingpong = -1.0 * pp_pen
+        reward_sla = 1.0 * sla_term
+        reward_outage = -2.0 * outage
+
+        reward = (
+            reward_throughput
+            + reward_queue
+            + reward_delay
+            + reward_handover
+            + reward_pingpong
+            + reward_sla
+            + reward_outage
+        )
+
+        self._last_reward_breakdown = {
+            "throughput": float(reward_throughput),
+            "queue": float(reward_queue),
+            "delay": float(reward_delay),
+            "handover": float(reward_handover),
+            "pingpong": float(reward_pingpong),
+            "sla": float(reward_sla),
+            "outage": float(reward_outage),
+            "total": float(reward),
+        }
+
+        return float(reward)
+
+    # ------------------------------------------------------------------
+    # Internal step helpers
+    # ------------------------------------------------------------------
+
+    def _advance_gnbs(self) -> List[float]:
+        rewards = []
+        for gnb in self.gnbs:
+            reward = 0.0
+            if hasattr(gnb, "n_slices_l1") and hasattr(gnb, "step"):
+                n_slices = max(int(gnb.n_slices_l1), 1)
+                base = int(gnb.n_prbs // n_slices)
+                action = np.full((n_slices,), base, dtype=int)
+                rem = int(gnb.n_prbs - action.sum())
+                if rem > 0:
+                    action[:rem] += 1
+
+                try:
+                    _state, info = gnb.step(action.tolist())
+                    if isinstance(info, dict):
+                        reward = float(info.get("reward", 0.0))
+                except Exception:
+                    reward = 0.0
+            rewards.append(reward)
+        return rewards
+
+    def _simulate_radio_and_service(self):
+        attached = self._group_ues_by_serving_gnb()
+
+        for gnb_id, ue_list in attached.items():
+            if gnb_id is None:
+                for ue in ue_list:
+                    ue.connected = False
+                    ue.bits = 0
+                    ue.prbs = 0
+                    ue.serving_power_dbm = -np.inf
+                    ue.interference_dbm = -np.inf
+                    ue.noise_dbm = -np.inf
+                    ue.estimate_sinr(-np.inf)
+                    ue.transmission_step(received=False)
                 continue
 
-            gnb_curr = self.gnbs[current]
-            gnb_best = self.gnbs[best]
+            gnb = self._get_gnb_by_id(gnb_id)
+            if gnb is None:
+                for ue in ue_list:
+                    ue.connected = False
+                    ue.bits = 0
+                    ue.prbs = 0
+                    ue.serving_power_dbm = -np.inf
+                    ue.interference_dbm = -np.inf
+                    ue.noise_dbm = -np.inf
+                    ue.estimate_sinr(-np.inf)
+                    ue.transmission_step(received=False)
+                continue
 
-            sig_curr = gnb_curr.get_received_power_dbm(x, y) if gnb_curr.is_point_in_coverage(x, y) else -np.inf
-            sig_best = gnb_best.get_received_power_dbm(x, y) if gnb_best.is_point_in_coverage(x, y) else -np.inf
+            n_users = max(len(ue_list), 1)
+            prbs_per_ue = max(int(gnb.n_prbs // n_users), 1)
 
-            a3_triggered = (sig_best - sig_curr) > self.handover_hysteresis
+            for ue in ue_list:
+                metrics = self._compute_link_metrics(gnb, ue)
 
-            if a3_triggered:
-                if (not ue.ho_pending) or (ue.ho_candidate != best):
-                    ue.ho_pending = True
-                    ue.ho_candidate = best
-                    ue.ho_counter = 1
-                    ue.target_gnb = best
-                else:
-                    ue.ho_counter += 1
+                rx_dbm = metrics["rx_power_dbm"]
+                noise_dbm = metrics["noise_dbm"]
+                interf_dbm = metrics["interference_dbm"]
+                sinr_db = metrics["sinr_db"]
+                snr_db = metrics["snr_db"]
 
-                if ue.ho_counter >= self.handover_ttt:
-                    self._perform_handover(ue_id, current, best)
+                ue.connected = np.isfinite(sinr_db)
+                ue.serving_power_dbm = rx_dbm
+                ue.noise_dbm = noise_dbm
+                ue.interference_dbm = interf_dbm
+                ue.estimate_sinr(float(sinr_db))
+                ue.estimate_snr([float(snr_db)] if np.isfinite(snr_db) else [-np.inf])
+                ue.prbs = prbs_per_ue
+
+                if not ue.connected:
+                    ue.bits = 0
+                    ue.transmission_step(received=False)
+                    continue
+
+                ue.bits = self._estimate_bits_for_ue(
+                    ue=ue,
+                    sinr_db=sinr_db,
+                    prbs=prbs_per_ue,
+                    gnb=gnb,
+                )
+                ue.transmission_step(received=True)
+
+    def _interpret_action_for_ue(self, action, ue: UE, candidates: List):
+        if np.isscalar(action) or isinstance(action, (int, np.integer)):
+            try:
+                chosen_idx = int(action)
+            except Exception:
+                chosen_idx = int(np.asarray(action).item())
+        else:
+            arr = np.asarray(action, dtype=float).reshape(-1)
+            if arr.size == 1:
+                chosen_idx = int(arr[0])
             else:
-                ue.ho_pending = False
-                ue.ho_candidate = None
-                ue.ho_counter = 0
-                ue.target_gnb = None
+                chosen_idx = int(np.argmax(arr))
 
-    def _perform_handover(self, ue_id: int, from_gnb: int, to_gnb: int):
-        ue = self._ues[ue_id]
-        ue.serving_gnb = to_gnb
-        ue.target_gnb = None
-        ue.connected = True
-        ue.ho_pending = False
-        ue.ho_candidate = None
-        ue.ho_counter = 0
+        serving = self._get_gnb_by_id(ue.serving_gnb) if ue.serving_gnb is not None else None
+        alt_candidates = [g for g in candidates if serving is None or g.id != serving.id]
+        alt_candidates = alt_candidates[: self.max_candidates]
 
-        event = {
-            "step": self.step_count,
-            "ue_id": ue_id,
-            "from_gnb": from_gnb,
-            "to_gnb": to_gnb,
-            "x": ue.x,
-            "y": ue.y,
-        }
-        self.handover_log.append(event)
-        self.last_step_handover_count += 1
+        if chosen_idx == 0:
+            return serving
 
-        if self.verbose:
-            print(
-                f"[HO] step={self.step_count}, ue_id={ue_id}, "
-                f"{from_gnb} -> {to_gnb}, "
-                f"pos=({ue.x:.2f}, {ue.y:.2f})"
-            )
+        alt_idx = chosen_idx - 1
+        if 0 <= alt_idx < len(alt_candidates):
+            return alt_candidates[alt_idx]
+        return serving
+
+    def _apply_handover_logic(self, ue: UE, target_gnb) -> bool:
+        current_id = ue.serving_gnb
+        target_id = None if target_gnb is None else target_gnb.id
+        self.handover_events = []
+        if target_id is None:
+            ue.target_gnb = None
+            ue.ho_pending = False
+            ue.ho_candidate = None
+            ue.ho_counter = 0
+            ue.connected = False
+            ue.serving_gnb = None
+            return False
+
+        if current_id == target_id:
+            ue.target_gnb = current_id
+            ue.ho_pending = False
+            ue.ho_candidate = None
+            ue.ho_counter = 0
+            ue.connected = True
+            return False
+
+        current_gnb = self._get_gnb_by_id(current_id) if current_id is not None else None
+
+        target_sinr = self._get_sinr_db(target_gnb, ue)
+        current_sinr = self._get_sinr_db(current_gnb, ue) if current_gnb is not None else -np.inf
+        improvement = target_sinr - current_sinr
+
+        if improvement < self.handover_hysteresis:
+            ue.target_gnb = current_id
+            ue.ho_pending = False
+            ue.ho_candidate = None
+            ue.ho_counter = 0
+            return False
+
+        counter_map = self._handover_target_counter.setdefault(ue.id, {})
+        counter_map[target_id] = counter_map.get(target_id, 0) + 1
+
+        ue.target_gnb = target_id
+        ue.ho_pending = True
+        ue.ho_candidate = target_id
+        ue.ho_counter = counter_map[target_id]
+
+        if counter_map[target_id] >= self.handover_ttt:
+            self._prev_serving_gnb[ue.id] = self._last_serving_gnb.get(ue.id)
+            self._last_serving_gnb[ue.id] = current_id
+            old_serving = current_id
+            new_serving = target_id
+
+            self.handover_events.append({
+                "step": int(self._step_count),
+                "ue_id": int(ue.id),
+                "from_gnb": -1 if old_serving is None else int(old_serving),
+                "to_gnb": int(new_serving),
+            })
+            ue.serving_gnb = target_id
+            ue.connected = True
+            ue.ho_pending = False
+            ue.ho_candidate = None
+            ue.ho_counter = 0
+            counter_map.clear()
+            return True
+
+        return False
 
     # ------------------------------------------------------------------
-    # Metrics helpers
+    # Info
     # ------------------------------------------------------------------
+    def get_history(self):
+        return list(self.history)
 
-    def _ue_count_per_gnb(self) -> List[int]:
-        counts = [0] * self.n_gnbs
+    def get_handover_events(self):
+        return list(self.handover_events)
+    def _build_info(self, per_gnb_rewards: Optional[List[float]] = None) -> Dict:
+        ue_per_gnb = [0] * self.n_gnbs
+        connected = 0
+        disconnected = 0
+
         for ue in self._ues.values():
-            if ue.serving_gnb is not None:
-                counts[ue.serving_gnb] += 1
-        return counts
+            if ue.connected and ue.serving_gnb is not None:
+                connected += 1
+                gidx = self._gnb_index_from_id(ue.serving_gnb)
+                if gidx is not None:
+                    ue_per_gnb[gidx] += 1
+            else:
+                disconnected += 1
 
-    def _count_connected_ues(self) -> int:
-        return sum(1 for ue in self._ues.values() if ue.serving_gnb is not None)
+        if per_gnb_rewards is None:
+            per_gnb_rewards = [0.0] * self.n_gnbs
 
-    def _count_disconnected_ues(self) -> int:
-        return sum(1 for ue in self._ues.values() if ue.serving_gnb is None)
+        info = {
+            "step_count": self._step_count,
+            "n_gnbs": self.n_gnbs,
+            "n_tracked_ues": len(self._ues),
+            "n_connected_ues": connected,
+            "n_disconnected_ues": disconnected,
+            "ue_per_gnb": ue_per_gnb,
+            "per_gnb_rewards": list(per_gnb_rewards),
+            "mean_gnb_reward": float(np.mean(per_gnb_rewards)) if per_gnb_rewards else 0.0,
+            "current_control_ue_id": self._current_control_ue_id,
+        }
+
+        if self._last_reward_breakdown:
+            info["reward_breakdown"] = dict(self._last_reward_breakdown)
+
+        return info
+
+    # ------------------------------------------------------------------
+    # Internal utilities
+    # ------------------------------------------------------------------
+
+    def _get_observation_for_current_ue(self) -> np.ndarray:
+        if self._current_control_ue_id is None or self._current_control_ue_id not in self._ues:
+            return np.zeros(self.observation_space.shape, dtype=np.float32)
+
+        ue = self._ues[self._current_control_ue_id]
+        candidates = self.get_candidate_gnbs(ue, top_k=self.max_candidates)
+        self._last_candidates = [g.id for g in candidates]
+        return self.build_ue_observation(ue, candidates)
+
+    def _find_best_gnb_for_ue(self, ue: UE):
+        best_gnb = None
+        best_sinr = -np.inf
+        for gnb in self.gnbs:
+            sinr_db = self._get_sinr_db(gnb, ue)
+            if sinr_db > best_sinr:
+                best_sinr = sinr_db
+                best_gnb = gnb
+        return best_gnb
+
+    def _pick_next_control_ue(self) -> Optional[int]:
+        self._refresh_round_robin_order()
+        if not self._round_robin_order:
+            return None
+        ue_id = self._round_robin_order[self._rr_index % len(self._round_robin_order)]
+        self._rr_index = (self._rr_index + 1) % len(self._round_robin_order)
+        return ue_id
+
+    def _refresh_round_robin_order(self):
+        self._round_robin_order = sorted(self._ues.keys())
+
+    def _group_ues_by_serving_gnb(self) -> Dict[Optional[int], List[UE]]:
+        groups: Dict[Optional[int], List[UE]] = {}
+        for ue in self._ues.values():
+            groups.setdefault(ue.serving_gnb, []).append(ue)
+        return groups
+
+    def _gnb_index_from_id(self, gnb_id: Optional[int]) -> Optional[int]:
+        if gnb_id is None:
+            return None
+        for idx, gnb in enumerate(self.gnbs):
+            if gnb.id == gnb_id:
+                return idx
+        return None
+
+    def _get_gnb_by_id(self, gnb_id: Optional[int]):
+        if gnb_id is None:
+            return None
+        for gnb in self.gnbs:
+            if gnb.id == gnb_id:
+                return gnb
+        return None
+
+    def _is_in_coverage(self, gnb, ue: UE) -> bool:
+        if hasattr(gnb, "is_point_in_coverage"):
+            return bool(gnb.is_point_in_coverage(ue.x, ue.y))
+        return True
+
+    def _get_rx_power_dbm(self, gnb, ue: UE) -> float:
+        if gnb is None:
+            return -np.inf
+        if hasattr(gnb, "get_received_power_dbm"):
+            try:
+                return float(gnb.get_received_power_dbm(ue.x, ue.y))
+            except Exception:
+                return -np.inf
+        return -np.inf
+
+    def _get_noise_power_dbm(self, gnb) -> float:
+        if gnb is None:
+            return -100.0
+        if hasattr(gnb, "get_noise_power_dbm"):
+            try:
+                return float(gnb.get_noise_power_dbm())
+            except Exception:
+                pass
+        return -100.0
+
+    def _dbm_to_watts(self, p_dbm: float) -> float:
+        if not np.isfinite(p_dbm):
+            return 0.0
+        return 10.0 ** ((p_dbm - 30.0) / 10.0)
+
+    def _watts_to_dbm(self, p_watts: float) -> float:
+        if p_watts <= 0.0:
+            return -np.inf
+        return 10.0 * np.log10(p_watts) + 30.0
+
+    def _compute_interference_watts(self, serving_gnb, ue: UE) -> float:
+        if serving_gnb is None:
+            return 0.0
+
+        total_watts = 0.0
+        for other in self.gnbs:
+            if other.id == serving_gnb.id:
+                continue
+
+            try:
+                same_carrier = serving_gnb.uses_same_carrier(other)
+            except Exception:
+                same_carrier = False
+
+            if not same_carrier:
+                continue
+
+            if not self._is_in_coverage(other, ue):
+                continue
+
+            if hasattr(other, "get_received_power_watts"):
+                p_w = float(other.get_received_power_watts(ue.x, ue.y))
+            else:
+                p_dbm = self._get_rx_power_dbm(other, ue)
+                p_w = self._dbm_to_watts(p_dbm)
+
+            total_watts += max(p_w, 0.0)
+
+        return total_watts
+
+    def _compute_link_metrics(self, gnb, ue: UE) -> Dict[str, float]:
+        if gnb is None or not self._is_in_coverage(gnb, ue):
+            noise_dbm = self._get_noise_power_dbm(gnb) if gnb is not None else -np.inf
+            return {
+                "rx_power_dbm": -np.inf,
+                "noise_dbm": float(noise_dbm),
+                "interference_dbm": -np.inf,
+                "snr_db": -np.inf,
+                "sinr_db": -np.inf,
+            }
+
+        rx_dbm = self._get_rx_power_dbm(gnb, ue)
+        noise_dbm = self._get_noise_power_dbm(gnb)
+
+        if not np.isfinite(rx_dbm) or not np.isfinite(noise_dbm):
+            return {
+                "rx_power_dbm": float(rx_dbm),
+                "noise_dbm": float(noise_dbm),
+                "interference_dbm": -np.inf,
+                "snr_db": -np.inf,
+                "sinr_db": -np.inf,
+            }
+
+        sig_w = self._dbm_to_watts(rx_dbm)
+        noise_w = self._dbm_to_watts(noise_dbm)
+        interf_w = self._compute_interference_watts(gnb, ue)
+
+        snr_db = rx_dbm - noise_dbm
+        sinr_lin = sig_w / max(noise_w + interf_w, 1e-15)
+        sinr_db = 10.0 * np.log10(max(sinr_lin, 1e-15))
+
+        return {
+            "rx_power_dbm": float(rx_dbm),
+            "noise_dbm": float(noise_dbm),
+            "interference_dbm": float(self._watts_to_dbm(interf_w)) if interf_w > 0 else -np.inf,
+            "snr_db": float(snr_db),
+            "sinr_db": float(sinr_db),
+        }
+
+    def _get_sinr_db(self, gnb, ue: UE) -> float:
+        return float(self._compute_link_metrics(gnb, ue)["sinr_db"])
+
+    def _get_snr_db(self, gnb, ue: UE) -> float:
+        if gnb is None:
+            return -np.inf
+
+        for method_name in ("get_ue_snr", "get_snr_db", "get_snr"):
+            if hasattr(gnb, method_name):
+                method = getattr(gnb, method_name)
+                try:
+                    return float(method(ue.x, ue.y))
+                except TypeError:
+                    try:
+                        return float(method(ue))
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+        rx = self._get_rx_power_dbm(gnb, ue)
+        if not np.isfinite(rx):
+            return -np.inf
+        noise = self._get_noise_power_dbm(gnb)
+        return float(rx - noise)
+
+    def _estimate_gnb_load(self, gnb_id: int) -> float:
+        gnb = self._get_gnb_by_id(gnb_id)
+        if gnb is None:
+            return 1.0
+
+        for method_name in ("get_load", "load"):
+            if hasattr(gnb, method_name):
+                attr = getattr(gnb, method_name)
+                try:
+                    return float(attr() if callable(attr) else attr)
+                except Exception:
+                    pass
+
+        total_prbs = max(int(getattr(gnb, "n_prbs", 1)), 1)
+        used_prbs = 0
+        for ue in self._ues.values():
+            if ue.serving_gnb == gnb_id and ue.connected:
+                used_prbs += int(max(ue.prbs, 0))
+
+        return self._clip01(used_prbs / total_prbs)
+
+    def _estimate_bits_for_ue(self, ue: UE, sinr_db: float, prbs: int, gnb) -> int:
+        sinr_linear = max(10.0 ** (sinr_db / 10.0), 1e-6)
+        rb_bw = 180e3
+        spectral_eff = math.log2(1.0 + sinr_linear)
+        spectral_eff = min(max(spectral_eff, 0.0), 8.0)
+
+        ue.spectral_efficiency = float(spectral_eff)
+
+        bits = prbs * rb_bw * self.step_dt * spectral_eff
+        return max(int(bits), 0)
+
+    def _normalize_sinr_db(self, sinr_db: float) -> float:
+        if not np.isfinite(sinr_db):
+            return 0.0
+        return self._clip01((sinr_db + 10.0) / 40.0)
+
+    def _slice_sla_bonus(
+        self,
+        ue: UE,
+        th_norm: float,
+        w_norm: float,
+        snr_norm: float,
+        load_norm: float,
+    ) -> float:
+        slice_type = (ue.slice_type or "eMBB").upper()
+
+        if slice_type == "EMBB":
+            return self._clip01(0.7 * th_norm + 0.3 * (1.0 - load_norm))
+        if slice_type == "URLLC":
+            return self._clip01(0.6 * (1.0 - w_norm) + 0.4 * snr_norm)
+        if slice_type == "MMTC":
+            return self._clip01(1.0 - load_norm)
+
+        return self._clip01(0.5 * th_norm + 0.5 * (1.0 - load_norm))
+
+    def _is_ping_pong(self, ue: UE) -> bool:
+        last_serv = self._last_serving_gnb.get(ue.id)
+        prev_serv = self._prev_serving_gnb.get(ue.id)
+        if last_serv is None or prev_serv is None:
+            return False
+        return ue.serving_gnb == prev_serv and ue.serving_gnb != last_serv
+
+    @staticmethod
+    def _clip01(x: float) -> float:
+        return float(np.clip(x, 0.0, 1.0))
+
+    @staticmethod
+    def _snr_fill_value() -> float:
+        return -20.0
+
+    def _get_speed(self, ue):
+        return float(np.sqrt(ue.vx ** 2 + ue.vy ** 2))
+
+    def _get_distance(self, gnb, ue):
+        if gnb is None:
+            return np.inf
+        if hasattr(gnb, "distance_to_ue"):
+            return float(gnb.distance_to_ue(ue.x, ue.y))
+        return float(np.sqrt((gnb.x - ue.x) ** 2 + (gnb.y - ue.y) ** 2))
+
+    def _get_approach_score(self, gnb, ue, eps=1e-9):
+        if gnb is None:
+            return 0.0
+
+        dx = float(gnb.x - ue.x)
+        dy = float(gnb.y - ue.y)
+
+        vx = float(ue.vx)
+        vy = float(ue.vy)
+
+        v_norm = np.sqrt(vx * vx + vy * vy)
+        d_norm = np.sqrt(dx * dx + dy * dy)
+
+        if v_norm < eps or d_norm < eps:
+            return 0.0
+
+        score = (vx * dx + vy * dy) / (v_norm * d_norm + eps)
+        return float(np.clip(score, -1.0, 1.0))
