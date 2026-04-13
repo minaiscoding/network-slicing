@@ -22,12 +22,31 @@ scenario_3gnb_overlap = {
     'coverage_radius': [350.0, 350.0, 350.0],
 
     # Same carrier → interference + realistic competition
-    'carrier_ids': [1, 0, 0],
+    'carrier_ids': [0, 0, 0],
 
     # Number of UEs
     'n_ues': 200,
 
     # You can switch later to "uniform"
+    'ue_distribution': 'clustered',
+
+}
+
+
+scenario_3gnb_overlap_large = {
+    'n_gnbs': 3,
+    'max_prbs_per_gnb': [150, 150, 150],
+
+    'gnb_positions': [
+        (0.0, 0.0),
+        (1200.0, 0.0),
+        (600.0, 1040.0),
+    ],
+
+    'coverage_radius': [800.0, 800.0, 800.0],
+    'carrier_ids': [0, 0, 0],
+
+    'n_ues': 200,
     'ue_distribution': 'clustered',
 
     'slices': [
@@ -36,6 +55,44 @@ scenario_3gnb_overlap = {
         {'type': 'URLLC', 'count': 1},
     ]
 }
+
+
+
+scenario_4gnb_mixed = {
+    'n_gnbs': 4,
+
+    'max_prbs_per_gnb': [150, 150, 150, 150],
+
+    # 3 overlapping cells + 1 slightly separated cell
+    'gnb_positions': [
+        (0.0, 0.0),        # gNB 0
+        (900.0, 0.0),      # gNB 1
+        (450.0, 780.0),    # gNB 2
+        (1650.0, 250.0),   # gNB 3 -> a bit away
+    ],
+
+    # First 3 overlap strongly, 4th overlaps weakly / partially
+    'coverage_radius': [700.0, 700.0, 700.0, 650.0],
+
+    # Same carrier for the first 3 to create interference,
+    # 4th can be same or different depending on what you want
+    'carrier_ids': [0, 0, 0, 0],
+
+    'n_ues': 200,
+    'ue_distribution': 'clustered',
+
+    'slices': [
+        {'type': 'eMBB', 'count': 2},
+        {'type': 'mMTC', 'count': 1},
+        {'type': 'URLLC', 'count': 1},
+    ]
+}
+
+
+
+
+
+
 scenario_1 = {
     'n_gnbs': 20,
     'max_prbs_per_gnb': [150] * 20,

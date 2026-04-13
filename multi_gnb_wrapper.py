@@ -73,8 +73,6 @@ class MultiGNBWrapper(gym.Env):
         self._next_ue_id = 0
         self._ues: Dict[int, UE] = {}
         self._current_control_ue_id: Optional[int] = None
-        self._round_robin_order: List[int] = []
-        self._rr_index = 0
         self._step_count = 0
 
         self._handover_target_counter: Dict[int, Dict[int, int]] = {}
@@ -84,6 +82,7 @@ class MultiGNBWrapper(gym.Env):
         self._last_candidates: List[int] = []
         self._last_info: Dict = {}
         self._last_reward_breakdown: Dict = {}
+        self.handover_events: List[Dict] = []
 
     # ------------------------------------------------------------------
     # Gym API
@@ -93,14 +92,15 @@ class MultiGNBWrapper(gym.Env):
         super().reset(seed=seed)
         if seed is not None:
             self._rng = np.random.default_rng(seed)
+
         self.history = []
         self._step_count = 0
         self._current_control_ue_id = None
-        self._rr_index = 0
         self._last_candidates = []
         self._last_info = {}
         self._last_reward_breakdown = {}
-        self.handover_events = []
+
+
         for gnb in self.gnbs:
             if hasattr(gnb, "reset"):
                 gnb.reset()
@@ -131,15 +131,17 @@ class MultiGNBWrapper(gym.Env):
             best = self._find_best_gnb_for_ue(ue)
             ue.serving_gnb = best.id if best is not None else None
             ue.connected = ue.serving_gnb is not None
+
             self._ues[ue.id] = ue
 
             if best is not None:
                 best.attach_ue(ue)
+
             self._handover_target_counter[ue.id] = {}
             self._last_serving_gnb[ue.id] = ue.serving_gnb
             self._prev_serving_gnb[ue.id] = None
 
-        self._refresh_round_robin_order()
+        self._simulate_radio_and_service()
         self._current_control_ue_id = self._pick_next_control_ue()
 
         obs = self._get_observation_for_current_ue()
@@ -164,7 +166,9 @@ class MultiGNBWrapper(gym.Env):
         if self._current_control_ue_id is None or self._current_control_ue_id not in self._ues:
             self._current_control_ue_id = self._pick_next_control_ue()
 
+        # The action must apply to the UE corresponding to the last returned observation.
         ue = self._ues[self._current_control_ue_id]
+        acted_ue_id = ue.id
 
         for tracked_ue in self._ues.values():
             tracked_ue.update_position(self.step_dt)
@@ -177,46 +181,89 @@ class MultiGNBWrapper(gym.Env):
         candidates = self.get_candidate_gnbs(ue, top_k=self.max_candidates)
         self._last_candidates = [g.id for g in candidates]
 
+        current_id = ue.serving_gnb
         target_gnb = self._interpret_action_for_ue(action, ue, candidates)
+        requested_target_id = None if target_gnb is None else target_gnb.id
+
         handover_done = self._apply_handover_logic(ue, target_gnb)
-        old_gnb = self._get_gnb_by_id(current_id) if current_id is not None else None
-        new_gnb = self._get_gnb_by_id(target_id) if target_id is not None else None
 
-        if old_gnb is not None:
-            old_gnb.detach_ue(ue.id)
+        final_id = ue.serving_gnb
 
-        if new_gnb is not None:
-            new_gnb.attach_ue(ue)
+        if handover_done and current_id != final_id:
+            old_gnb = self._get_gnb_by_id(current_id) if current_id is not None else None
+            new_gnb = self._get_gnb_by_id(final_id) if final_id is not None else None
 
-        ue.serving_gnb = target_id
-        ue.connected = new_gnb is not None
+            if old_gnb is not None:
+                old_gnb.detach_ue(ue.id)
+
+            if new_gnb is not None:
+                new_gnb.attach_ue(ue)
+
+        ue.connected = final_id is not None
+
         self._simulate_radio_and_service()
 
         pingpong = self._is_ping_pong(ue)
         reward = self.compute_reassociation_reward(
             ue=ue,
-            target_gnb=self._get_gnb_by_id(ue.serving_gnb) if ue.serving_gnb is not None else None,
+            target_gnb=self._get_gnb_by_id(final_id) if final_id is not None else None,
             handover_done=handover_done,
             pingpong=pingpong,
         )
 
+        # Pick the next UE after state update, so next observation is for the current worst UE.
         self._current_control_ue_id = self._pick_next_control_ue()
+        next_control_ue_id = self._current_control_ue_id
         obs = self._get_observation_for_current_ue()
 
         terminated = False
         truncated = self._step_count >= int(self.max_episode_steps)
 
         info = self._build_info(per_gnb_rewards=per_gnb_rewards)
-        info["current_control_ue_id"] = self._current_control_ue_id
+        info["acted_ue_id"] = acted_ue_id
+        info["next_control_ue_id"] = next_control_ue_id
         info["last_action_candidates"] = self._last_candidates
+        info["requested_target_gnb"] = requested_target_id
+        info["serving_gnb_before"] = current_id
+        info["serving_gnb_after"] = final_id
+
         self._last_info = info
-        self._log_step(float(reward))
+        self._log_step(float(reward), acted_ue_id=acted_ue_id)
+
         return obs, float(reward), terminated, truncated, info
 
-    def _log_step(self, reward: float):
+    # ------------------------------------------------------------------
+    # UE prioritization
+    # ------------------------------------------------------------------
+
+    def _compute_ue_badness(self, ue: UE) -> float:
+        score = 0.0
+
+        if not ue.connected or ue.serving_gnb is None:
+            score += 1e6
+
+        if ue.ho_pending:
+            score += 5e3
+
+        sinr = float(ue.e_sinr) if np.isfinite(ue.e_sinr) else -100.0
+        score += max(0.0, 20.0 - sinr) * 50.0
+
+        score += float(ue.queue) * 1e-3
+        score += float(ue.wait_time) * 10.0
+        score += max(0.0, 1e6 - float(ue.th)) * 1e-5
+
+        return score
+
+    def _pick_next_control_ue(self) -> Optional[int]:
+        if not self._ues:
+            return None
+        return max(self._ues.values(), key=self._compute_ue_badness).id
+
+    def _log_step(self, reward: float, acted_ue_id: Optional[int] = None):
         row = {
             "step": int(self._step_count),
-            "control_ue_id": self._current_control_ue_id,
+            "acted_ue_id": acted_ue_id,
+            "next_control_ue_id": self._current_control_ue_id,
             "reward": float(reward),
             "n_connected_ues": int(sum(1 for ue in self._ues.values() if ue.connected)),
             "n_disconnected_ues": int(sum(1 for ue in self._ues.values() if not ue.connected)),
@@ -233,6 +280,7 @@ class MultiGNBWrapper(gym.Env):
             row[f"ue{ue.id}_handover_pending"] = int(bool(ue.ho_pending))
 
         self.history.append(row)
+
     # ------------------------------------------------------------------
     # Public helpers
     # ------------------------------------------------------------------
@@ -270,12 +318,14 @@ class MultiGNBWrapper(gym.Env):
         ue.serving_gnb = best.id if best is not None else None
         ue.connected = ue.serving_gnb is not None
 
+        if best is not None:
+            best.attach_ue(ue)
+
         self._ues[ue_id] = ue
         self._handover_target_counter[ue_id] = {}
         self._last_serving_gnb[ue_id] = ue.serving_gnb
         self._prev_serving_gnb[ue_id] = None
 
-        self._refresh_round_robin_order()
         if self._current_control_ue_id is None:
             self._current_control_ue_id = ue_id
 
@@ -497,10 +547,30 @@ class MultiGNBWrapper(gym.Env):
             rewards.append(reward)
         return rewards
 
+    def _estimate_required_prbs(self, ue, sinr_db):
+        sinr_linear = max(10.0 ** (sinr_db / 10.0), 1e-6)
+        rb_bw = 180e3
+
+        spectral_eff = math.log2(1.0 + sinr_linear)
+        spectral_eff = min(max(spectral_eff, 0.0), 8.0)
+
+        bits_per_prb = rb_bw * self.step_dt * spectral_eff
+
+        if bits_per_prb <= 0:
+            return 0
+
+        demand_bits = max(float(ue.queue), 0.0)
+
+        return int(np.ceil(demand_bits / bits_per_prb))
+
     def _simulate_radio_and_service(self):
         attached = self._group_ues_by_serving_gnb()
 
         for gnb_id, ue_list in attached.items():
+
+            # ---------------------------
+            # Case: no serving gNB
+            # ---------------------------
             if gnb_id is None:
                 for ue in ue_list:
                     ue.connected = False
@@ -514,6 +584,7 @@ class MultiGNBWrapper(gym.Env):
                 continue
 
             gnb = self._get_gnb_by_id(gnb_id)
+
             if gnb is None:
                 for ue in ue_list:
                     ue.connected = False
@@ -526,11 +597,36 @@ class MultiGNBWrapper(gym.Env):
                     ue.transmission_step(received=False)
                 continue
 
-            n_users = max(len(ue_list), 1)
-            prbs_per_ue = max(int(gnb.n_prbs // n_users), 1)
-
+            # ---------------------------
+            # Step 1: compute metrics
+            # ---------------------------
+            metrics_map = {}
             for ue in ue_list:
-                metrics = self._compute_link_metrics(gnb, ue)
+                metrics_map[ue.id] = self._compute_link_metrics(gnb, ue)
+
+            # ---------------------------
+            # Step 2: available PRBs
+            # ---------------------------
+            remaining_prbs = int(gnb.n_prbs)
+
+            # ---------------------------
+            # Step 3: sort UEs (priority)
+            # ---------------------------
+            # You can change this later (QoS-aware)
+            sorted_ues = sorted(
+                ue_list,
+                key=lambda u: (
+                    u.queue,  # prioritize large queues
+                    -(metrics_map[u.id]["sinr_db"] if np.isfinite(metrics_map[u.id]["sinr_db"]) else -1e9)
+                ),
+                reverse=True
+            )
+
+            # ---------------------------
+            # Step 4: allocate PRBs
+            # ---------------------------
+            for ue in sorted_ues:
+                metrics = metrics_map[ue.id]
 
                 rx_dbm = metrics["rx_power_dbm"]
                 noise_dbm = metrics["noise_dbm"]
@@ -538,25 +634,52 @@ class MultiGNBWrapper(gym.Env):
                 sinr_db = metrics["sinr_db"]
                 snr_db = metrics["snr_db"]
 
-                ue.connected = np.isfinite(sinr_db)
                 ue.serving_power_dbm = rx_dbm
                 ue.noise_dbm = noise_dbm
                 ue.interference_dbm = interf_dbm
+
                 ue.estimate_sinr(float(sinr_db))
                 ue.estimate_snr([float(snr_db)] if np.isfinite(snr_db) else [-np.inf])
-                ue.prbs = prbs_per_ue
 
-                if not ue.connected:
+                # disconnected UE
+                if not np.isfinite(sinr_db):
+                    ue.connected = False
+                    ue.prbs = 0
                     ue.bits = 0
                     ue.transmission_step(received=False)
                     continue
 
+                ue.connected = True
+
+                # ---------------------------
+                # Compute required PRBs
+                # ---------------------------
+                required_prbs = self._estimate_required_prbs(ue, sinr_db)
+
+                # Allocate based on availability
+                allocated_prbs = min(required_prbs, remaining_prbs)
+
+                ue.prbs = allocated_prbs
+                remaining_prbs -= allocated_prbs
+
+                # ---------------------------
+                # No PRBs left
+                # ---------------------------
+                if allocated_prbs <= 0:
+                    ue.bits = 0
+                    ue.transmission_step(received=False)
+                    continue
+
+                # ---------------------------
+                # Compute transmitted bits
+                # ---------------------------
                 ue.bits = self._estimate_bits_for_ue(
                     ue=ue,
                     sinr_db=sinr_db,
-                    prbs=prbs_per_ue,
+                    prbs=allocated_prbs,
                     gnb=gnb,
                 )
+
                 ue.transmission_step(received=True)
 
     def _interpret_action_for_ue(self, action, ue: UE, candidates: List):
@@ -587,7 +710,7 @@ class MultiGNBWrapper(gym.Env):
     def _apply_handover_logic(self, ue: UE, target_gnb) -> bool:
         current_id = ue.serving_gnb
         target_id = None if target_gnb is None else target_gnb.id
-        self.handover_events = []
+
         if target_id is None:
             ue.target_gnb = None
             ue.ho_pending = False
@@ -629,6 +752,7 @@ class MultiGNBWrapper(gym.Env):
         if counter_map[target_id] >= self.handover_ttt:
             self._prev_serving_gnb[ue.id] = self._last_serving_gnb.get(ue.id)
             self._last_serving_gnb[ue.id] = current_id
+
             old_serving = current_id
             new_serving = target_id
 
@@ -638,6 +762,7 @@ class MultiGNBWrapper(gym.Env):
                 "from_gnb": -1 if old_serving is None else int(old_serving),
                 "to_gnb": int(new_serving),
             })
+
             ue.serving_gnb = target_id
             ue.connected = True
             ue.ho_pending = False
@@ -651,11 +776,13 @@ class MultiGNBWrapper(gym.Env):
     # ------------------------------------------------------------------
     # Info
     # ------------------------------------------------------------------
+
     def get_history(self):
         return list(self.history)
 
     def get_handover_events(self):
         return list(self.handover_events)
+
     def _build_info(self, per_gnb_rewards: Optional[List[float]] = None) -> Dict:
         ue_per_gnb = [0] * self.n_gnbs
         connected = 0
@@ -712,17 +839,6 @@ class MultiGNBWrapper(gym.Env):
                 best_sinr = sinr_db
                 best_gnb = gnb
         return best_gnb
-
-    def _pick_next_control_ue(self) -> Optional[int]:
-        self._refresh_round_robin_order()
-        if not self._round_robin_order:
-            return None
-        ue_id = self._round_robin_order[self._rr_index % len(self._round_robin_order)]
-        self._rr_index = (self._rr_index + 1) % len(self._round_robin_order)
-        return ue_id
-
-    def _refresh_round_robin_order(self):
-        self._round_robin_order = sorted(self._ues.keys())
 
     def _group_ues_by_serving_gnb(self) -> Dict[Optional[int], List[UE]]:
         groups: Dict[Optional[int], List[UE]] = {}
@@ -841,7 +957,8 @@ class MultiGNBWrapper(gym.Env):
         snr_db = rx_dbm - noise_dbm
         sinr_lin = sig_w / max(noise_w + interf_w, 1e-15)
         sinr_db = 10.0 * np.log10(max(sinr_lin, 1e-15))
-
+        sinr_db = float(np.clip(sinr_db, -20.0, 40.0))
+        snr_db = float(np.clip(snr_db, -20.0, 40.0))
         return {
             "rx_power_dbm": float(rx_dbm),
             "noise_dbm": float(noise_dbm),

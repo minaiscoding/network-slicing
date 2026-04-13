@@ -370,6 +370,7 @@ def create_multignb_env(
     handover_penalty: float = 0.1,
     use_mean_gnb_reward: bool = True,
     verbose: bool = False,
+    step_dt: float = 1e-3,
     max_episode_steps: int = 100,
 ):
     if MultiGNBWrapper is None:
@@ -411,6 +412,7 @@ def create_multignb_env(
         handover_penalty=handover_penalty,
         use_mean_gnb_reward=use_mean_gnb_reward,
         verbose=verbose,
+        step_dt=step_dt,
         max_episode_steps=max_episode_steps,
     )
 
@@ -436,6 +438,7 @@ def create_env(
     handover_penalty: float = 0.1,
     use_mean_gnb_reward: bool = True,
     verbose: bool = False,
+    step_dt: float = 1e-3,
     max_episode_steps: int = 100,
 ):
     """
@@ -464,9 +467,9 @@ def create_env(
             handover_penalty=handover_penalty,
             use_mean_gnb_reward=use_mean_gnb_reward,
             verbose=verbose,
+            step_dt=step_dt,
             max_episode_steps=max_episode_steps,
         )
-
     node = create_nodeb(
         rng=rng,
         n=n,

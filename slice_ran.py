@@ -91,7 +91,8 @@ class UE:
 
     def estimate_snr(self, snr):
         self.snr = snr
-        self.e_snr = round(np.mean(snr))
+        m = np.mean(snr)
+        self.e_snr = float(m) if np.isfinite(m) else -np.inf
 
     def estimate_sinr(self, sinr):
         self.sinr = sinr

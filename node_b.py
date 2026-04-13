@@ -168,18 +168,26 @@ class NodeB:
 
     def get_received_power_dbm(self, ue_x, ue_y):
         """
-        Received power at UE position using a simple path-loss model.
+        Received power at UE position using a more realistic macro-cell path-loss model.
         Returns -inf if UE is out of coverage.
         """
         if not self.is_point_in_coverage(ue_x, ue_y):
             return -np.inf
 
-        d_m = max(self.distance_to_ue(ue_x, ue_y), 1.0)
+        d_m = max(self.distance_to_ue(ue_x, ue_y), 10.0)  # avoid singularity / unrealistically close range
         d_km = d_m / 1000.0
-        f_mhz = self.center_frequency_hz / 1e6
+        f_ghz = self.center_frequency_hz / 1e9
 
-        # Simple baseline path loss model
-        path_loss_db = 32.4 + 20 * np.log10(f_mhz) + 20 * np.log10(d_km)
+        # Urban macro style path loss (close to your older channel model)
+        # 128.1 + 37.6 log10(d_km) is commonly used around 2 GHz urban macro.
+        # Add a mild frequency correction so 3.5 GHz is slightly harsher.
+        path_loss_db = 128.1 + 37.6 * np.log10(d_km) + 20.0 * np.log10(f_ghz / 2.0)
+
+        # Optional log-normal shadowing
+        shadowing_db = np.random.normal(0.0, 6.0)
+
+        # Optional minimum coupling loss clamp
+        path_loss_db = max(path_loss_db + shadowing_db, 70.0)
 
         return self.tx_power_dbm - path_loss_db
 
