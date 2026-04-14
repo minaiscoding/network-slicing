@@ -10,6 +10,7 @@ Usage:
     python pipelines/pipeline.py --algo PPOLag --runs 10 --total-steps 500000
     python pipelines/pipeline.py --algo TD3Lag --runs 5 --skip-training
     python pipelines/pipeline.py --algo SACLag --runs 1 --total-steps 10000 --device cpu
+    python pipelines/pipeline.py --algo CPO --runs 30 --workers 20
 """
 
 import os
@@ -18,6 +19,7 @@ import glob
 import argparse
 import json
 import numpy as np
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import matplotlib
 matplotlib.use("Agg")
@@ -30,8 +32,9 @@ if _PROJECT_ROOT not in sys.path:
 from pipelines.configs import build_config, SUPPORTED_ALGOS, ON_POLICY, OFF_POLICY
 
 # ── Defaults ──
-NUM_RUNS = 30
-WINDOW   = 400
+NUM_RUNS    = 30
+WINDOW      = 400
+MAX_WORKERS = 20
 
 
 def _algo_dir_name(algo):
@@ -70,63 +73,126 @@ def _find_latest_checkpoint(run_dir):
     return pts[-1]
 
 
-def run_training(algo, num_runs, total_steps, steps_per_epoch, device,
-                 results_path, runs_dir, mapping_file):
-    """Train num_runs sequentially and return {run_id: checkpoint_path}."""
-    os.makedirs(results_path, exist_ok=True)
+def _train_single_run(run_id, algo, total_steps, steps_per_epoch, device,
+                       results_path, runs_dir):
+    """
+    Train a single run in its own process.
+    Returns (run_id, checkpoint_path or None).
+    """
+    # Re-setup imports inside subprocess (fresh process, fresh module state)
+    import os, sys, glob
+    import numpy as np
+
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
 
     import pipelines.wrappers as wrap_mod
     import omnisafe
+    from pipelines.configs import build_config
 
-    # Patch wrappers module globals
-    wrap_mod._RESULTS_PATH = results_path + "/"
-    wrap_mod._TOTAL_STEPS  = total_steps
-    wrap_mod.STEPS_PER_EPOCH = steps_per_epoch
+    os.makedirs(results_path, exist_ok=True)
+
+    # Patch wrappers module globals for this process
+    wrap_mod._RESULTS_PATH     = results_path + "/"
+    wrap_mod._TOTAL_STEPS      = total_steps
+    wrap_mod.STEPS_PER_EPOCH   = steps_per_epoch
+    wrap_mod._CURRENT_RUN_ID   = run_id
+    wrap_mod._ENV_INSTANCE_COUNT[run_id] = 0
+    wrap_mod._EPOCH_COUNTER    = 0
+    wrap_mod._RNG              = np.random.default_rng(3 + run_id)
 
     custom_cfgs = build_config(algo, total_steps, steps_per_epoch, device)
+
+    print(f'\n{"="*60}', flush=True)
+    print(f'=== {algo} CURRICULUM Training Run {run_id} (PID {os.getpid()}) ===', flush=True)
+    print(f'{"="*60}', flush=True)
+    print(f'Total steps: {total_steps}, Steps/epoch: {steps_per_epoch}', flush=True)
+
+    before = set()
+    if os.path.isdir(runs_dir):
+        before = set(os.listdir(runs_dir))
+
+    agent = omnisafe.Agent(
+        algo=algo,
+        env_id=wrap_mod.ENV_ID,
+        custom_cfgs=custom_cfgs,
+    )
+    agent.learn()
+
+    try:
+        agent.plot(smooth=1)
+    except Exception as e:
+        print(f'[Run {run_id}] Plotting failed: {e}', flush=True)
+
+    after = set()
+    if os.path.isdir(runs_dir):
+        after = set(os.listdir(runs_dir))
+
+    new_dirs = after - before
+    checkpoint_path = None
+    if new_dirs:
+        newest = sorted(new_dirs)[-1]
+        save_dir = os.path.join(runs_dir, newest, "torch_save")
+        if os.path.isdir(save_dir):
+            pts = glob.glob(os.path.join(save_dir, "epoch-*.pt"))
+            if pts:
+                pts.sort(key=lambda p: int(os.path.basename(p).split("-")[1].split(".")[0]))
+                checkpoint_path = pts[-1]
+                print(f"[Pipeline] Run {run_id} -> checkpoint: {checkpoint_path}", flush=True)
+
+    return run_id, checkpoint_path
+
+
+def run_training(algo, num_runs, total_steps, steps_per_epoch, device,
+                 results_path, runs_dir, mapping_file, max_workers=MAX_WORKERS):
+    """Train num_runs in parallel using ProcessPoolExecutor."""
+    os.makedirs(results_path, exist_ok=True)
+
     checkpoint_map = {}
+    effective_workers = min(max_workers, num_runs)
 
-    for run_id in range(num_runs):
-        # Reset per-run state
-        wrap_mod._CURRENT_RUN_ID = run_id
-        wrap_mod._ENV_INSTANCE_COUNT[run_id] = 0
-        wrap_mod._EPOCH_COUNTER = 0
-        wrap_mod._RNG = np.random.default_rng(3 + run_id)
+    print(f"[Pipeline] Launching {num_runs} runs across {effective_workers} parallel workers")
 
-        print(f'\n{"="*60}')
-        print(f'=== {algo} CURRICULUM Training Run {run_id} ===')
-        print(f'{"="*60}')
-        print(f'Total steps: {total_steps}, Steps/epoch: {steps_per_epoch}')
-
-        before = _existing_omnisafe_dirs(runs_dir)
-
-        agent = omnisafe.Agent(
-            algo=algo,
-            env_id=wrap_mod.ENV_ID,
-            custom_cfgs=custom_cfgs,
+    if effective_workers <= 1:
+        # Sequential fallback for single run
+        rid, ckpt = _train_single_run(
+            0, algo, total_steps, steps_per_epoch, device,
+            results_path, runs_dir,
         )
-        agent.learn()
+        if ckpt:
+            checkpoint_map[rid] = ckpt
+    else:
+        with ProcessPoolExecutor(max_workers=effective_workers) as executor:
+            futures = {}
+            for run_id in range(num_runs):
+                future = executor.submit(
+                    _train_single_run,
+                    run_id, algo, total_steps, steps_per_epoch, device,
+                    results_path, runs_dir,
+                )
+                futures[future] = run_id
 
-        try:
-            agent.plot(smooth=1)
-        except Exception as e:
-            print(f'Plotting failed: {e}')
-
-        after = _existing_omnisafe_dirs(runs_dir)
-        new_dirs = after - before
-        if new_dirs:
-            newest = sorted(new_dirs)[-1]
-            ckpt = _find_latest_checkpoint(os.path.join(runs_dir, newest))
-            if ckpt:
-                checkpoint_map[run_id] = ckpt
-                print(f"[Pipeline] Run {run_id} -> checkpoint: {ckpt}")
+            for future in as_completed(futures):
+                run_id = futures[future]
+                try:
+                    rid, ckpt = future.result()
+                    if ckpt:
+                        checkpoint_map[rid] = ckpt
+                    print(f"[Pipeline] Run {rid} finished successfully.", flush=True)
+                except Exception as e:
+                    print(f"[Pipeline] Run {run_id} FAILED: {e}", flush=True)
+                    import traceback
+                    traceback.print_exc()
 
     with open(mapping_file, "w") as f:
         json.dump({str(k): v for k, v in checkpoint_map.items()}, f, indent=2)
     print(f"\n[Pipeline] Checkpoint map saved to {mapping_file}")
+    print(f"[Pipeline] {len(checkpoint_map)}/{num_runs} runs produced checkpoints.")
     return checkpoint_map
 
 
+# ...existing code... (load_checkpoint_map stays the same)
 def load_checkpoint_map(mapping_file):
     if not os.path.isfile(mapping_file):
         return {}
@@ -135,9 +201,7 @@ def load_checkpoint_map(mapping_file):
     return {int(k): v for k, v in raw.items()}
 
 
-# =====================================================================
-# Phase 2: Plot results
-# =====================================================================
+# ...existing code... (run_plot stays the same)
 def run_plot(algo, num_runs, results_path, plots_path):
     import plot_results as pr
 
@@ -167,9 +231,7 @@ def run_plot(algo, num_runs, results_path, plots_path):
     print(f"\n[Pipeline] Plots saved to {save_path}")
 
 
-# =====================================================================
-# Phase 3: Select best run (lowest total violations)
-# =====================================================================
+# ...existing code... (find_best_run stays the same)
 def find_best_run(num_runs, results_path):
     best_id    = None
     best_score = float("inf")
@@ -212,9 +274,7 @@ def find_best_run(num_runs, results_path):
     return best_id, best_score
 
 
-# =====================================================================
-# Phase 4: Evaluate best checkpoint
-# =====================================================================
+# ...existing code... (run_evaluation stays the same)
 def run_evaluation(algo, checkpoint_path, results_path, plots_path,
                    seed=3, epochs=5, steps_per_epoch=2000,
                    penalty=10.0, device="cpu"):
@@ -431,9 +491,7 @@ def run_evaluation(algo, checkpoint_path, results_path, plots_path,
         print("-" * len(header))
 
 
-# =====================================================================
-# Fallback checkpoint finder
-# =====================================================================
+# ...existing code... (find_checkpoint_for_run stays the same)
 def find_checkpoint_for_run(run_id, checkpoint_map, runs_dir):
     if run_id in checkpoint_map:
         path = checkpoint_map[run_id]
@@ -479,6 +537,8 @@ def main():
                         help="Steps per evaluation epoch")
     parser.add_argument("--device", type=str, default="cuda:0",
                         help="Device for training/evaluation")
+    parser.add_argument("--workers", type=int, default=MAX_WORKERS,
+                        help=f"Max parallel training workers (default: {MAX_WORKERS})")
     args = parser.parse_args()
 
     algo = args.algo
@@ -495,11 +555,12 @@ def main():
     # ── Phase 1: Train ──
     if not args.skip_training:
         print("=" * 60)
-        print(f"  PHASE 1: Training {args.runs} {algo} runs")
+        print(f"  PHASE 1: Training {args.runs} {algo} runs ({args.workers} workers)")
         print("=" * 60)
         checkpoint_map = run_training(
             algo, args.runs, args.total_steps, steps_per_epoch,
             args.device, results_path, runs_dir, mapping_file,
+            max_workers=args.workers,
         )
     else:
         print(f"[Pipeline] Skipping training (--skip-training)")

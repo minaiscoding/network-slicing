@@ -31,7 +31,7 @@ from slice_l1 import SliceL1eMBB, SliceL1mMTC, SliceL1URLLC
 from slice_ran import SliceRANmMTC, SliceRANeMBB, SliceRANURLC
 from schedulers import ProportionalFair
 from channel_models import SINRSelectiveFading, MCSCodeset, MCS_CODESET_EMBB, MCS_CODESET_URLLC
-from kbrl_control import KBRL_Control, Learner
+
 from algorithms.kernel import GaussianKernel
 from algorithms.projectron import SVvariable, Projectron
 import copy
@@ -380,63 +380,7 @@ urllc_sec = (1, 4)
 urllc_a   = (3, 15)
 
 
-# ========================= create_kbrl_agent ==============================
 
-def create_kbrl_agent(rng, n, accuracy_range=[0.99, 0.999]):
-    '''
-    Returns a KBRL agent.
-
-    Parameters
-    ----------
-    rng            : numpy RNG
-    n              : scenario index (0–4)
-    accuracy_range : accuracy bounds for the learner
-    '''
-    sc      = scenarios[n]
-    n_prbs  = sc['n_prbs']
-    n_embb  = sc['n_embb']
-    n_mmtc  = sc['n_mmtc']
-    n_urllc = sc.get('n_urllc', 0)
-    embb_dim  = len(state_variables_embb)
-    mmtc_dim  = len(state_variables_mmtc)
-    urllc_dim = len(state_variables_urllc)
-
-    learners = []
-    i = 0
-
-    for _ in range(n_embb):
-        sv             = SVvariable()
-        kernel         = GaussianKernel(sv, 1)
-        algorithm      = Projectron(kernel)
-        initial_action = rng.integers(embb_a[0], embb_a[1])
-        sec            = rng.integers(embb_sec[0], embb_sec[1])
-        learner        = Learner(algorithm, slice(i, i + embb_dim), initial_action, sec)
-        learners.append(learner)
-        i += embb_dim
-
-    for _ in range(n_mmtc):
-        sv             = SVvariable()
-        kernel         = GaussianKernel(sv, 1)
-        algorithm      = Projectron(kernel)
-        initial_action = rng.integers(mmtc_a[0], mmtc_a[1])
-        sec            = rng.integers(mmtc_sec[0], mmtc_sec[1])
-        learner        = Learner(algorithm, slice(i, i + mmtc_dim), initial_action, sec)
-        learners.append(learner)
-        i += mmtc_dim
-
-    for _ in range(n_urllc):
-        sv             = SVvariable()
-        kernel         = GaussianKernel(sv, 1)
-        algorithm      = Projectron(kernel)
-        initial_action = rng.integers(urllc_a[0], urllc_a[1])
-        sec            = rng.integers(urllc_sec[0], urllc_sec[1])
-        learner        = Learner(algorithm, slice(i, i + urllc_dim), initial_action, sec)
-        learners.append(learner)
-        i += urllc_dim
-
-    kbrl_agent = KBRL_Control(learners, n_prbs, alfa=alfa, accuracy_range=accuracy_range)
-
-    return kbrl_agent
 
 
 # ========================= create_env_from_config =========================
