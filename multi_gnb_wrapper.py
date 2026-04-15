@@ -65,7 +65,7 @@ class MultiGNBWrapper(gym.Env):
         self.observation_space = gym.spaces.Box(
             low=-1e9,
             high=1e9,
-            shape=(23,),
+            shape=(42,),
             dtype=np.float32,
         )
 
@@ -87,7 +87,24 @@ class MultiGNBWrapper(gym.Env):
     # ------------------------------------------------------------------
     # Gym API
     # ------------------------------------------------------------------
+    def _encode_ue_slice_type(self, ue: UE) -> List[float]:
+        slice_type = getattr(ue, "slice_type", None)
+        return [
+            1.0 if slice_type == "eMBB" else 0.0,
+            1.0 if slice_type == "mMTC" else 0.0,
+            1.0 if slice_type == "URLLC" else 0.0,
+        ]
 
+    def _get_gnb_priority_features(self, gnb, ue: UE) -> List[float]:
+        if gnb is None:
+            return [1.0, 1.0, 1.0, 1.0]
+
+        p_embb = float(gnb.get_slice_priority("eMBB"))
+        p_mmtc = float(gnb.get_slice_priority("mMTC"))
+        p_urllc = float(gnb.get_slice_priority("URLLC"))
+        match = float(gnb.get_slice_match_score(ue))
+
+        return [p_embb, p_mmtc, p_urllc, match]
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
         if seed is not None:
@@ -423,7 +440,7 @@ class MultiGNBWrapper(gym.Env):
             float(ue.queue),
             float(ue.th),
         ]
-
+        obs.extend(self._encode_ue_slice_type(ue))
         if serving is not None and self._is_in_coverage(serving, ue):
             serving_metrics = self._compute_link_metrics(serving, ue)
             serving_sinr = serving_metrics["sinr_db"]
@@ -436,11 +453,14 @@ class MultiGNBWrapper(gym.Env):
             serving_dist = 1e9
             serving_approach = 0.0
 
+        serving_priority_features = self._get_gnb_priority_features(serving, ue)
+
         obs.extend([
             float(serving_sinr),
             float(serving_load),
             float(serving_dist),
             float(serving_approach),
+            *serving_priority_features,
         ])
 
         for gnb in alt_candidates:
@@ -450,17 +470,29 @@ class MultiGNBWrapper(gym.Env):
             cand_dist = self._get_distance(gnb, ue)
             cand_approach = self._get_approach_score(gnb, ue)
 
+            cand_priority_features = self._get_gnb_priority_features(gnb, ue)
+
             obs.extend([
                 float(cand_sinr),
                 float(cand_load),
                 float(cand_dist),
                 float(cand_approach),
+                *cand_priority_features,
             ])
 
-        while len(obs) < 23:
-            obs.extend([float(-np.inf), 1.0, 1e9, 0.0])
+        while len(obs) < 42:
+            obs.extend([
+                float(-np.inf),  # sinr
+                1.0,  # load
+                1e9,  # dist
+                0.0,  # approach
+                1.0,  # p_embb
+                1.0,  # p_mmtc
+                1.0,  # p_urllc
+                1.0,  # match
+            ])
 
-        return np.asarray(obs[:23], dtype=np.float32)
+        return np.asarray(obs[:42], dtype=np.float32)
 
     # ------------------------------------------------------------------
     # Reward

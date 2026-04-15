@@ -372,6 +372,7 @@ def create_multignb_env(
     verbose: bool = False,
     step_dt: float = 1e-3,
     max_episode_steps: int = 100,
+
 ):
     if MultiGNBWrapper is None:
         raise ImportError(
@@ -401,6 +402,7 @@ def create_multignb_env(
             bandwidth_hz=cfg.get('bandwidth_hz', 20e6),
             tx_power_dbm=cfg.get('tx_power_dbm', 30.0),
             noise_figure_db=cfg.get('noise_figure_db', 7.0),
+            slice_priorities=cfg.get('slice_priorities', None),
         )
         gnb_list.append(node)
 
@@ -481,6 +483,7 @@ def create_env(
         node_y=node_y,
         coverage_radius=coverage_radius,
         slot_length=slot_length,
+        slice_priorities=None,
     )
 
     node_env = gym.make('gym_ran_slice:RanSlice-v1', node_b=node, penalty=penalty)
