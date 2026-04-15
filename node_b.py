@@ -24,6 +24,7 @@ class NodeB:
         bandwidth_hz=20e6,
         tx_power_dbm=30.0,
         noise_figure_db=7.0,
+        slice_priorities=None,
     ):
         """
         Initialize gNodeB with hexagonal coverage and radio parameters.
@@ -64,9 +65,28 @@ class NodeB:
 
         # Calculate coverage area
         self.coverage_area = self._calculate_hexagon_area()
+        # Slice preference / policy profile for reassociation RL
+        if slice_priorities is None:
+            slice_priorities = {
+                "eMBB": 1.0,
+                "mMTC": 1.0,
+                "URLLC": 1.0,
+            }
 
+        self.slice_priorities = {
+            "eMBB": float(slice_priorities.get("eMBB", 1.0)),
+            "mMTC": float(slice_priorities.get("mMTC", 1.0)),
+            "URLLC": float(slice_priorities.get("URLLC", 1.0)),
+        }
         self.reset()
+    def get_slice_priority(self, slice_type: str) -> float:
+        return float(self.slice_priorities.get(slice_type, 1.0))
 
+    def get_slice_match_score(self, ue) -> float:
+        ue_slice = getattr(ue, "slice_type", None)
+        if ue_slice is None:
+            return 1.0
+        return self.get_slice_priority(ue_slice)
     def _calculate_hexagon_vertices(self):
         """
         Calculate the six vertices of the regular hexagon.
