@@ -1,20 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-CPO (Constrained Policy Optimization) algorithm for RAN slicing using OmniSafe.
-
-Sequential curriculum: low -> medium -> congested (one pass) with configurable
-per-scenario step budgets.  Includes emergency PRB redistribution logic and
-RNG reseeding at epoch boundaries.
-
-Alternates between medium and congested scenarios every 10k steps.
-Each episode is 10k steps long.
-
-Classes:
-    RanSliceCPOEnv  — OmniSafe CMDP environment
-    TrainerCPO      — Training orchestrator
-"""
-
 import os
 import sys
 import numpy as np
