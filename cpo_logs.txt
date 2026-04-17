@@ -1,0 +1,27 @@
+nohup: ignoring input
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+Users of this version of Gym should be able to simply replace 'import gym' with 'import gymnasium as gym' in the vast majority of cases.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+RanSliceCPOEnv has not been registered yet
+
+============================================================
+=== CPO Training Run 0 ===
+============================================================
+Alternating: medium ↔ congested every 1800 steps (1 episode)
+Total steps: 360000
+Cost limit: 100.0
+Output: /home/aminakhadir/Desktop/network-slicing-1/pipelines/cpo/history_0.npz
+Loading CPO.yaml from /home/aminakhadir/Desktop/network-slicing-1/omnivenv/lib/python3.10/site-packages/omnisafe/utils/../configs/on-policy/CPO.yaml
+[Run 0] Creating CPO env instance 1 (TRAINING)
+n_prbs = 150
+n_slices = 3
+[Run 0] Creating CPO env instance 2 (EVAL)
+n_prbs = 150
+n_slices = 3
+Logging data to 
+./runs/CPO-{RanSliceCPOPipeline-v0}/seed-000-2026-04-17-16-34-45/progress.csv
+Save with config in config.json
+
+Training started...
+INFO: Start training

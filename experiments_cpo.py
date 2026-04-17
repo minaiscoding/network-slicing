@@ -34,7 +34,7 @@ from config_loader import load_scenario
 from scenario_creator import create_env_from_config
 
 RUNS                = 30
-PROCESSES           = 4
+PROCESSES           = 20
 TOTAL_STEPS         = 2000000
 PENALTY             = 1000
 SCENARIOS           = ['low', 'medium', 'congested']

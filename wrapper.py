@@ -37,6 +37,8 @@ class ReportWrapper(gym.Wrapper):
     - self.action_history (total PRBs per step)
     - self.violation_per_slice_history (violations per slice per step)
     - self.resource_per_slice_history (PRBs allocated per slice per step)
+    - self.throughput_per_slice_history (throughput per slice per step)
+    - self.queue_per_slice_history (queue size per slice per step)
     done = True if the number of steps is reached
     """
     def __init__(self, env, steps = 2000, control_steps = 500, env_id = 1, extra_samples = 10, path = './logs/', verbose = False, continuous_mode = False):
@@ -71,6 +73,8 @@ class ReportWrapper(gym.Wrapper):
         # Per-slice metrics
         self.violation_per_slice_history = np.zeros((self.steps, self.n_slices), dtype = int)
         self.resource_per_slice_history = np.zeros((self.steps, self.n_slices), dtype = int)
+        self.throughput_per_slice_history = np.zeros((self.steps, self.n_slices), dtype = float)
+        self.queue_per_slice_history = np.zeros((self.steps, self.n_slices), dtype = float)
   
     def reset(self, seed=None, options=None):
         """
@@ -131,6 +135,21 @@ class ReportWrapper(gym.Wrapper):
                 self.violation_per_slice_history[self.step_counter] = per_slice_violations
             self.resource_per_slice_history[self.step_counter] = action[:self.n_slices] if len(action) >= self.n_slices else action
 
+            # Per-slice throughput and queue from l1_info
+            l1_info = info.get('l1_info', [])
+            for si in range(min(self.n_slices, len(l1_info))):
+                slice_info = l1_info[si]
+                if isinstance(slice_info, dict):
+                    for _, ri in slice_info.items():
+                        if isinstance(ri, dict):
+                            self.throughput_per_slice_history[self.step_counter, si] = (
+                                ri.get('cbr_th', 0.0) + ri.get('vbr_th', 0.0)
+                            )
+                            self.queue_per_slice_history[self.step_counter, si] = (
+                                ri.get('cbr_queue', 0.0) + ri.get('vbr_queue', 0.0)
+                                + ri.get('delay', 0.0)  # mMTC uses 'delay' instead
+                            )
+
         # increment counter
         self.step_counter += 1
 
@@ -151,6 +170,8 @@ class ReportWrapper(gym.Wrapper):
                  resources = self.action_history,
                  violation_per_slice = self.violation_per_slice_history,
                  resource_per_slice = self.resource_per_slice_history,
+                 throughput_per_slice = self.throughput_per_slice_history,
+                 queue_per_slice = self.queue_per_slice_history,
                  n_slices = self.n_slices)
     
     def set_evaluation(self, eval_steps, new_path = None, change_name = False):
@@ -162,6 +183,8 @@ class ReportWrapper(gym.Wrapper):
         # Pad per-slice arrays
         self.violation_per_slice_history = np.pad(self.violation_per_slice_history, [(0, eval_steps), (0, 0)])
         self.resource_per_slice_history = np.pad(self.resource_per_slice_history, [(0, eval_steps), (0, 0)])
+        self.throughput_per_slice_history = np.pad(self.throughput_per_slice_history, [(0, eval_steps), (0, 0)])
+        self.queue_per_slice_history = np.pad(self.queue_per_slice_history, [(0, eval_steps), (0, 0)])
         if new_path:
             self.path = new_path
         if change_name:
