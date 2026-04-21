@@ -33,7 +33,7 @@ class UE:
     Tracks HOL delay, HARQ retransmissions, and packet-level BLER.
     '''
     def __init__(self, id, slice_ran_id, traffic_source, type,
-                 window=50, slot_length=1e-4, harq_max_retransmissions=5,
+                 window=50, slot_length=1e-3, harq_max_retransmissions=5,
                  fading_type=None):
         self.id = id
         self.slice_ran_id = slice_ran_id
@@ -213,7 +213,8 @@ class SliceRANmMTC:
 
     def get_state(self):
         for i, var in enumerate(self.state_variables):
-            self.state[i] = self.info[var] / self.norm_const[var]
+            self.state[i] = self.info[var]
+        
         return self.state
 
     def update_info(self, delay, avg_rep, devices):
@@ -239,7 +240,7 @@ class SliceRANeMBB:
     def __init__(self, rng, user_counter, id, SLA,
                  CBR_description, VBR_description,
                  state_variables, norm_const, slots_per_step,
-                 slot_length=1e-4, harq_max_retransmissions=10,
+                 slot_length=1e-3, harq_max_retransmissions=10,
                  ue_profiles=None):
         self.type = 'eMBB'
         self.rng = rng
@@ -512,7 +513,8 @@ class SliceRANeMBB:
 
     def get_state(self):
         for i, var in enumerate(self.state_variables):
-            self.state[i] = self.info[var] / self.norm_const[var]
+            self.state[i] = self.info[var]
+
         return self.state
 
 
@@ -527,7 +529,7 @@ class SliceRANURLC(SliceRANeMBB):
     def __init__(self, rng, user_counter, id, SLA,
                  CBR_description, VBR_description,
                  state_variables, norm_const, slots_per_step,
-                 slot_length=1e-4, harq_max_retransmissions=5,
+                 slot_length=1e-3, harq_max_retransmissions=5,
                  ue_profiles=None):
         super().__init__(rng, user_counter, id, SLA,
                          CBR_description, VBR_description,

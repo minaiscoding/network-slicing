@@ -33,13 +33,13 @@ class ReportWrapper(gym.Wrapper):
     - self.action_history 
     done = True if the number of steps is reached
     """
-    def __init__(self, env, steps = 2000, control_steps = 500, env_id = 1, extra_samples = 10, path = './logs/', verbose = False):
+    def __init__(self, env, steps = 2000, control_steps = 500, env_id = 1, extra_samples = 10, path = './logs/', verbose = False, continuous_mode = False):
         # Call the parent constructor, so we can access self.env later
         super(ReportWrapper, self).__init__(env)
         self.action_space = spaces.Box(low=0, high = 1,
-                                        shape=(self.n_slices + 1,), dtype=np.float)
-        self.observation_space = spaces.Box(low=-1, high=1,
-                                            shape=(self.n_variables,), dtype=np.float)
+                                        shape=(self.n_slices + 1,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=-float('inf'), high=float('inf'),
+                                            shape=(self.n_variables,), dtype=np.float32)
         self.steps = steps
         self.step_counter = 0
         self.control_steps = control_steps
@@ -48,6 +48,7 @@ class ReportWrapper(gym.Wrapper):
         self.path = path
         self.file_path = '{}history_{}.npz'.format(path, env_id)
         self.extra_samples = extra_samples # for safety
+        self.continuous_mode = continuous_mode
         self.reset_history()
 
         print('n_prbs = {}'.format(self.n_prbs))
@@ -55,7 +56,7 @@ class ReportWrapper(gym.Wrapper):
     
     def reset_history(self):
         self.violation_history = np.zeros((self.steps), dtype = np.int16)
-        self.reward_history = np.zeros((self.steps), dtype = np.float)
+        self.reward_history = np.zeros((self.steps), dtype = np.float32)
         self.action_history = np.zeros((self.steps), dtype = np.int16)
   
     def reset(self):
@@ -63,7 +64,12 @@ class ReportWrapper(gym.Wrapper):
         Reset the environment (but only when it is created)
         """
         self.step_counter = 0
-        self.obs = self.env.reset()
+        result = self.env.reset()
+        # Handle both Gym and Gymnasium return formats
+        if isinstance(result, tuple):
+            self.obs, _ = result
+        else:
+            self.obs = result
         if self.verbose:
             print('Environment {} RESET'.format(self.env_id))
         return self.obs
@@ -79,26 +85,29 @@ class ReportWrapper(gym.Wrapper):
             t_action = action.sum()
             if t_action == 0:
                 t_action = 1
-            action = np.array([np.floor(self.n_prbs * action[i]/t_action) for i in range(self.n_slices)], dtype=np.int)
+            action = np.array([np.floor(self.n_prbs * action[i]/t_action) for i in range(self.n_slices)], dtype=np.int64)
             # action = np.array([np.floor(self.n_prbs * action[i]/t_action) + 1 for i in range(self.n_slices)], dtype=np.int)
 
-        obs, reward, done, info = self.env.step(action)
+        # Handle both Gym and Gymnasium return formats
+        result = self.env.step(action)
+        
+        if len(result) == 5:
+            # Gymnasium format: obs, reward, terminated, truncated, info
+            obs, reward, terminated, truncated, info = result
+            done = terminated or truncated
+        else:
+            # Old Gym format: obs, reward, done, info
+            obs, reward, done, info = result
+            terminated, truncated = done, False
 
-        # RL algorithms work better with normalized observations between -1 and 1
-        obs = np.clip(obs,-0.5,1.5) 
-        obs = obs - 0.5
         self.obs = obs
 
-        # # (uncomment for NAF and TD3)
-        # # this normalizes the return [-1., 1.]
-        # if reward < 0:
-        # #     reward = reward / (PENALTY * SLICES)
-        #     reward = -1
-        # else:
-        #     reward = reward / self.n_prbs
+        if self.step_counter % 500 == 0:
+            print(f'[ReportWrapper step {self.step_counter}] obs (pre-omnisafe): min={obs.min():.4f} max={obs.max():.4f} mean={obs.mean():.4f}')
+            print(f'  values: {np.array2string(obs.astype(np.float32), precision=4, suppress_small=True)}')
 
         # collect historical data
-        violations = info['total_violations']
+        violations = info.get('total_violations', 0)
 
         if self.step_counter < self.steps:
             self.violation_history[self.step_counter] = violations
@@ -112,10 +121,15 @@ class ReportWrapper(gym.Wrapper):
             self.save_results()
         
         if self.verbose:
-            print('Environment {}: {}/{} steps, reward: {}, violations: {}'.format(self.env_id, self.step_counter, self.steps, reward, info['total_violations']))
+            print('Environment {}: {}/{} steps, reward: {}, violations: {}'.format(self.env_id, self.step_counter, self.steps, reward, violations))
 
-        # return obs, reward, done, info
-        return obs, reward, done, {0:0} # for keras rl this avoids problems
+        # Return consistent format for the caller
+        if self.continuous_mode:
+            # Return 5 values for continuous training (Gymnasium style)
+            return obs, reward, terminated, truncated, info
+        else:
+            # Return 4 values for compatibility
+            return obs, reward, done, {0:0}
 
     def save_results(self):
         np.savez(self.file_path, violation = self.violation_history, 
@@ -133,6 +147,19 @@ class ReportWrapper(gym.Wrapper):
         if change_name:
             self.file_path = '{}evaluation_{}.npz'.format(self.path, self.env_id)
 
+    @property
+    def n_variables(self):
+        return self.env.n_variables
+    
+    @property
+    def n_slices(self):
+        return self.env.n_slices
+    
+    @property
+    def n_prbs(self):
+        return self.env.n_prbs
+
+
 class DQNWrapper(ReportWrapper):
     '''
     Variation for DQN
@@ -143,8 +170,8 @@ class DQNWrapper(ReportWrapper):
         g_eMBB = 2 # ganularity
         max_eMBB = 51 # max prbs for a single slice
         self.actions = []
-        a = list(range(0,max_eMBB,g_eMBB))
-        for (a1,a2) in product(a,a):
+        a = list(range(0, max_eMBB, g_eMBB))
+        for (a1, a2) in product(a, a):
             if a1 + a2 <= self.n_prbs:
                 self.actions.append(np.array([a1, a2], dtype = np.int16))
         self.action_space = spaces.Discrete(len(self.actions))
@@ -152,6 +179,7 @@ class DQNWrapper(ReportWrapper):
     def step(self, action):
         a = self.actions[action]
         return super(DQNWrapper, self).step(a)
+
 
 class TimerWrapper(gym.Wrapper):
     '''
@@ -161,13 +189,13 @@ class TimerWrapper(gym.Wrapper):
         # Call the parent constructor, so we can access self.env later
         super(TimerWrapper, self).__init__(env)
         self.action_space = spaces.Box(low=0, high = 1,
-                                        shape=(self.n_slices + 1,), dtype=np.float)
-        self.observation_space = spaces.Box(low=-1, high=1,
-                                            shape=(self.n_variables,), dtype=np.float)
+                                        shape=(self.n_slices + 1,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=-float('inf'), high=float('inf'),
+                                            shape=(self.n_variables,), dtype=np.float32)
         self.steps = steps
         self.step_counter = 0
         self.simtime = 0
-        self.time_samples = np.zeros((self.steps), dtype = np.float)
+        self.time_samples = np.zeros((self.steps), dtype = np.float32)
         print('n_prbs = {}'.format(self.n_prbs))
         print('n_slices = {}'.format(self.n_slices))
   
@@ -177,7 +205,12 @@ class TimerWrapper(gym.Wrapper):
         """
         self.step_counter = 0
         self.simtime = 0
-        self.obs = self.env.reset()
+        result = self.env.reset()
+        # Handle both Gym and Gymnasium return formats
+        if isinstance(result, tuple):
+            self.obs, _ = result
+        else:
+            self.obs = result
         return self.obs
     
     def get_simtime(self):
@@ -195,16 +228,24 @@ class TimerWrapper(gym.Wrapper):
             t_action = action.sum()
             if t_action == 0:
                 t_action = 1
-            action = np.array([np.floor(self.n_prbs * action[i]/t_action) for i in range(self.n_slices)], dtype=np.int)
+            action = np.array([np.floor(self.n_prbs * action[i]/t_action) for i in range(self.n_slices)], dtype=np.int64)
         
         # measure simulation time
         t1 = time.time()
-        obs, reward, _, _ = self.env.step(action)
-        self.simtime += t1 - time.time()
         
-        # RL algorithms work better with normalized observations between -0.5 and 0.5
-        obs = np.clip(obs,-0.5,1.5) 
-        obs = obs - 0.5
+        # Handle both Gym and Gymnasium return formats
+        result = self.env.step(action)
+        
+        if len(result) == 5:
+            # Gymnasium format
+            obs, reward, terminated, truncated, info = result
+            done = terminated or truncated
+        else:
+            # Old Gym format
+            obs, reward, done, info = result
+        
+        self.simtime += time.time() - t1
+        
         self.obs = obs
 
         # increment counter
@@ -212,3 +253,15 @@ class TimerWrapper(gym.Wrapper):
 
         # return obs, reward, done, info
         return obs, reward, False, {0:0} # for keras rl this avoids problems
+
+    @property
+    def n_variables(self):
+        return self.env.n_variables
+    
+    @property
+    def n_slices(self):
+        return self.env.n_slices
+    
+    @property
+    def n_prbs(self):
+        return self.env.n_prbs

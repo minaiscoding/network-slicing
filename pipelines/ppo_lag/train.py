@@ -19,7 +19,7 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from algorithms.ppo_lag import TrainerPPOLag
+from algos.ppo_lag import TrainerPPOLag
 
 PIPELINE_DIR = os.path.dirname(os.path.abspath(__file__))
 

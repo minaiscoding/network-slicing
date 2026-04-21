@@ -32,8 +32,6 @@ from slice_ran import SliceRANmMTC, SliceRANeMBB, SliceRANURLC
 from schedulers import ProportionalFair
 from channel_models import SINRSelectiveFading, MCSCodeset, MCS_CODESET_EMBB, MCS_CODESET_URLLC
 
-from algorithms.kernel import GaussianKernel
-from algorithms.projectron import SVvariable, Projectron
 import copy
 
 # ----------------- scenario parameters ------------------------
@@ -220,7 +218,7 @@ def _resolve_sla(sla_config: dict | None):
 # ========================= create_env =====================================
 
 def create_env(rng, n,
-               slots_per_step=50,
+               slots_per_step=100,
                propagation_type='macro_cell_urban_2GHz',
                L1_level=True,
                penalty=100,
@@ -242,7 +240,7 @@ def create_env(rng, n,
     sla_config       : optional dict to override default SLA thresholds
                        (see module docstring for layout)
     '''
-    time_per_step = slots_per_step * 1e-4
+    time_per_step = slots_per_step * 1e-3
 
     sc = scenarios[n]
     n_prbs  = sc['n_prbs']
@@ -387,7 +385,7 @@ urllc_a   = (3, 15)
 
 def create_env_from_config(cfg,
                            rng,
-                           slots_per_step=50,
+                           slots_per_step=100,
                            propagation_type='macro_cell_urban_2GHz',
                            L1_level=True,
                            penalty=100):
@@ -416,7 +414,7 @@ def create_env_from_config(cfg,
         cfg = load_scenario('scenarios.yaml', 'urllc_mix')
         env = create_env_from_config(cfg, rng)
     """
-    time_per_step = slots_per_step * 1e-4
+    time_per_step = slots_per_step * 1e-3
 
     # --- resolve traffic and SLA from the ScenarioConfig ---
     (CBR_description, VBR_description,
@@ -528,7 +526,9 @@ def create_env_from_config(cfg,
             )
 
     node = NodeB(slices_l1, slots_per_step, n_prbs)
-    return gym.make('gym_ran_slice:RanSlice-v1', node_b=node, penalty=penalty)
+    env = gym.make('gym_ran_slice:RanSlice-v1', node_b=node, penalty=penalty)
+    env._node = node  # expose internal NodeB for debugging
+    return env
 
 
 def create_env_from_config_forecast(cfg, rng, trace_path,
@@ -554,7 +554,7 @@ def create_env_from_config_forecast(cfg, rng, trace_path,
     L1_level         : bool
     penalty          : int
     """
-    time_per_step = slots_per_step * 1e-4
+    time_per_step = slots_per_step * 1e-3
 
     (CBR_description, VBR_description,
      MTC_description,
@@ -658,3 +658,6 @@ def create_env_from_config_forecast(cfg, rng, trace_path,
     return gym.make('gym_ran_slice:RanSliceForecast-v1',
                     node_b=node, trace_path=trace_path,
                     forecast_horizon=forecast_horizon, penalty=penalty)
+
+
+

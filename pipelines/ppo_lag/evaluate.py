@@ -22,7 +22,7 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-import algorithms.ppo_lag as ppolag_mod
+import algos.ppo_lag as ppolag_mod
 from config_loader import load_scenarios
 from scenario_creator import create_env_from_config
 from wrapper import ReportWrapper
