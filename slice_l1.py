@@ -92,12 +92,14 @@ class SliceL1mMTC:
         return reward, violations
 
     def add_users(self, ue_list):
-        for ue in ue_list:
-            self.n_users += 1
-            self.ue_ids = np.append(self.ue_ids, ue.id)
-            self.repetitions = np.append(self.repetitions, ue.repetitions)
-            self.t_start = np.append(self.t_start, self.time)
-            self.slice_ran_ids = np.append(self.slice_ran_ids, ue.slice_ran_id)
+        if not ue_list:
+            return
+        n = len(ue_list)
+        self.n_users += n
+        self.ue_ids        = np.concatenate([self.ue_ids,        np.array([u.id            for u in ue_list], dtype=np.int64)])
+        self.repetitions   = np.concatenate([self.repetitions,   np.array([u.repetitions   for u in ue_list], dtype=np.int16)])
+        self.t_start       = np.concatenate([self.t_start,       np.full(n, self.time,                        dtype=np.int64)])
+        self.slice_ran_ids = np.concatenate([self.slice_ran_ids, np.array([u.slice_ran_id  for u in ue_list], dtype=np.int16)])
     
     def extract_users(self, ue_id_list):
         pass
@@ -245,7 +247,9 @@ class SliceL1eMBB:
     def extract_users(self, ue_id_list):
         for ue_id in ue_id_list:
             self.snr_generator.extract_user(ue_id)
-        self.ues = [ue for ue in self.ues if ue.id not in ue_id_list]
+        if ue_id_list:
+            ue_id_set = set(ue_id_list)
+            self.ues = [ue for ue in self.ues if ue.id not in ue_id_set]
 
     def slot(self):
         sm = self._slot_metrics

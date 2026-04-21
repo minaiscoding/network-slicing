@@ -120,19 +120,30 @@ class RanSliceCPOEnv(CMDP):
         self._MMTC_IDX         = 1
         self._MMTC_MIN_PRBS    = 5
 
+        # Continuous-network state: env is only truly reset once at startup
+        self._initialized  = False
+        self._current_obs  = None
+
     # Reset
     def reset(self, seed=None, options=None):
         self._step_count = 0
-        self._consecutive_violations.fill(0)
-        result = self._env.reset()
-        # Handle different return formats
-        if isinstance(result, tuple):
-            obs, info = result
-        else:
-            obs, info = result, {}
-        
-        # obs is already the raw NodeB state (normalized metrics)
-        return torch.as_tensor(obs, dtype=torch.float32), info
+
+        if not self._initialized:
+            # First call: boot the simulation from scratch
+            self._initialized = True
+            self._consecutive_violations.fill(0)
+            result = self._env.reset()
+            if isinstance(result, tuple):
+                obs, info = result
+            else:
+                obs, info = result, {}
+            self._current_obs = torch.as_tensor(obs, dtype=torch.float32)
+            return self._current_obs, info
+
+        # Subsequent calls (episode boundaries): network keeps running.
+        # Return the current observation so CPO can start collecting a new
+        # rollout without interrupting the simulation.
+        return self._current_obs, {}
 
     # Step with proactive PRB redistribution
     def step(self, action: torch.Tensor):
@@ -168,25 +179,30 @@ class RanSliceCPOEnv(CMDP):
         
         # Take step in environment
         result = self._env.step(act)
-        
+
         # Handle different return formats
         if len(result) == 5:
             state, reward, terminated, truncated, info = result
         else:
             state, reward, terminated, truncated, info = result[0], result[1], False, False, {}
-        
-        # Extract cost from violations
+
+        # Compute weighted cost and custom reward BEFORE updating consecutive violations
+        # (_consecutive_violations at this point reflects the PREVIOUS step's state,
+        #  which is used to classify the current reallocation as necessary or not)
+        cost   = self._compute_custom_cost(act, info)
+        reward = self._compute_custom_reward(act, info)
+
+        # Update last allocation
+        self._last_allocation = act.copy()
+
+        # Update consecutive violation counters
         violations = info.get('violations', np.zeros(self._n_slices))
         if hasattr(violations, '__len__') and len(violations) == self._n_slices:
-            cost = float(violations.sum())
-            # Update consecutive violation counters
             for s in range(self._n_slices):
                 if violations[s] > 0:
                     self._consecutive_violations[s] += 1
                 else:
                     self._consecutive_violations[s] = 0
-        else:
-            cost = float(info.get('total_violations', 0.0))
         
         self._step_count += 1
         self._global_step_count += 1
@@ -204,16 +220,14 @@ class RanSliceCPOEnv(CMDP):
             self._step_count = 0
         
         # Handle episode end
+        current_state = torch.as_tensor(state, dtype=torch.float32)
         if terminated or truncated:
-            final_state = torch.as_tensor(state, dtype=torch.float32)
-            result = self._env.reset()
-            if isinstance(result, tuple):
-                state, _ = result
-            else:
-                state = result
-            info["final_observation"] = final_state
+            # Network keeps running — no env reset, just record the boundary.
+            # CPO uses final_observation for value bootstrapping at the cut point.
+            info["final_observation"] = current_state
         else:
-            info["final_observation"] = torch.as_tensor(state, dtype=torch.float32)
+            info["final_observation"] = current_state
+        self._current_obs = current_state
         
         return (
             torch.as_tensor(state, dtype=torch.float32),
@@ -223,6 +237,83 @@ class RanSliceCPOEnv(CMDP):
             torch.as_tensor(truncated, dtype=torch.bool),
             info,
         )
+
+    def _compute_custom_cost(self, alloc_prbs, info):
+        """
+        Weighted per-slice cost based on the normalised gap above each slice's delay threshold.
+        gap = max(0, actual_delay - threshold) / threshold
+        Weights: URLLC=3.0 > eMBB=2.0 > mMTC=1.0
+        """
+        cost    = 0.0
+        l1_info = info.get('l1_info', [])
+
+        for slice_idx in range(self._n_slices):
+            if slice_idx >= len(l1_info):
+                continue
+            slice_info = l1_info[slice_idx]
+            if not isinstance(slice_info, dict):
+                continue
+            for ran_info in slice_info.values():
+                if not isinstance(ran_info, dict):
+                    continue
+                stype = ran_info.get('type', '').lower()
+
+                if 'urllc' in stype or slice_idx == 2:
+                    thresh = 50.0   # 50 slots = 5 ms
+                    delay  = ran_info.get('cbr_delay', 0.0)
+                    gap    = max(0.0, delay - thresh) / thresh
+                    cost  += 3.0 * gap
+
+                elif 'embb' in stype or slice_idx == 0:
+                    thresh = 10.0   # 10 ms
+                    delay  = ran_info.get('cbr_delay', 0.0)
+                    gap    = max(0.0, delay - thresh) / thresh
+                    cost  += 2.0 * gap
+
+                elif 'mmtc' in stype or slice_idx == 1:
+                    thresh = 300.0  # 300 slots = 300 ms
+                    delay  = ran_info.get('delay', 0.0)
+                    gap    = max(0.0, delay - thresh) / thresh
+                    cost  += 1.0 * gap
+
+        return float(cost)
+
+    def _compute_custom_reward(self, alloc_prbs, info):
+        """
+        Reward = free-PRB efficiency + eMBB throughput bonus
+                 - reallocation penalty (heavier when previous step had no violations).
+        """
+        # Free PRB efficiency: primary positive objective
+        remaining_prbs = self._n_prbs - alloc_prbs.sum()
+        reward = 0.4 * (remaining_prbs / max(self._n_prbs, 1))
+
+        # eMBB throughput bonus
+        l1_info = info.get('l1_info', [])
+        for slice_idx in range(self._n_slices):
+            if slice_idx >= len(l1_info):
+                continue
+            slice_info = l1_info[slice_idx]
+            if not isinstance(slice_info, dict):
+                continue
+            for ran_info in slice_info.values():
+                if not isinstance(ran_info, dict):
+                    continue
+                stype = ran_info.get('type', '').lower()
+                if 'embb' in stype or slice_idx == 0:
+                    cbr_th = ran_info.get('cbr_th', 0.0)
+                    vbr_th = ran_info.get('vbr_th', 0.0)
+                    reward += 0.1 * ((cbr_th + vbr_th) / 2.0) / 1e7
+
+        # Reallocation penalty:
+        # - heavy when previous step had no violations (change is unnecessary)
+        # - light when previous step had violations (change may be necessary)
+        allocation_change = float(np.sum(np.abs(alloc_prbs - self._last_allocation)))
+        if self._consecutive_violations.sum() == 0:
+            reward -= 0.2 * (allocation_change / max(self._n_prbs, 1))
+        else:
+            reward -= 0.02 * (allocation_change / max(self._n_prbs, 1))
+
+        return float(np.clip(reward, -1.0, 1.0))
 
     # Required abstract methods
     def render(self, *args, **kwargs):
@@ -348,8 +439,8 @@ if __name__ == "__main__":
     # Train on medium scenario only with custom parameters
     trainer = TrainerCPO(
         scenario='medium',
-        steps_per_episode=18000,      # 36000 steps per episode
-        steps_per_epoch= 36000,
+        steps_per_episode=600,      
+        steps_per_epoch= 6000,
         num_epochs=100,              # 100 epochs total
         device="cpu"                 # Use CPU (change to "cuda:0" if GPU available)
     )

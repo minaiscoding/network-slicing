@@ -285,6 +285,9 @@ class MCSCodeset:
         self.MIparameters = {'qpsk': [-0.25040431, 0.31591749],
                              '16qam': [5.12440916, 0.25423209],
                              '64qam': [9.16962738, 0.22298101]}
+        # Precomputed per-MCS terms and plain-list modulation for fast lookup
+        self._snr_terms       = self.A * self.snr + self.B   # shape (n_mcs,)
+        self._modulation_list = list(self.modulation)        # O(1) index vs pandas .iloc
     
     def compute_factors(self, Delta):
         # fits the factors A, B in rx_ptob(x) = A *(snr - snr_ref) + B
@@ -304,13 +307,15 @@ class MCSCodeset:
         return p
 
     def mcs_rate_vs_error(self, snr, error_upper_bound):
-        # returns the highest mcs whose estimated error is below the given bound
-        # and the corresponding achievable rate in bits per symbol
+        # Vectorised over all MCS levels at once — replaces O(n_mcs) Python loop
         rx_prob = 1.0 - error_upper_bound
-        for mcs in range(self.n_mcs):
-            if self.estimate_rx_prob(mcs, snr) < rx_prob:
-
-                return max(mcs-1, 0), self.rate[mcs] * self.order[mcs]
+        x     = self.A * snr - self._snr_terms          # shape (n_mcs,)
+        probs = 1.0 / (1.0 + np.exp(-x))
+        below = probs < rx_prob
+        if not below.any():
+            mcs = self.n_mcs - 1
+        else:
+            mcs = max(int(np.argmax(below)) - 1, 0)
         return mcs, self.rate[mcs] * self.order[mcs]
 
     def response(self, mcs, snr):
@@ -323,7 +328,7 @@ class MCSCodeset:
         #  - error probabilty
         if len(snr) > 1: # the UE measures one sinr per RB
             # compute the average mutual information of each RB
-            modulation = self.modulation.iloc[mcs]
+            modulation = self._modulation_list[mcs]
             params = self.MIparameters[modulation]
             MIvalues = sigmoid(snr, *params)
             averageMI = np.mean(MIvalues)

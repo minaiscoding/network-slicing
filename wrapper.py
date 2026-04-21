@@ -58,12 +58,15 @@ class ReportWrapper(gym.Wrapper):
         self.violation_history = np.zeros((self.steps), dtype = np.int16)
         self.reward_history = np.zeros((self.steps), dtype = np.float32)
         self.action_history = np.zeros((self.steps), dtype = np.int16)
+        self.reallocation_history = np.zeros((self.steps), dtype = np.int16)
+        self._last_prb_action = None
   
     def reset(self):
         """
         Reset the environment (but only when it is created)
         """
         self.step_counter = 0
+        self._last_prb_action = None
         result = self.env.reset()
         # Handle both Gym and Gymnasium return formats
         if isinstance(result, tuple):
@@ -109,10 +112,18 @@ class ReportWrapper(gym.Wrapper):
         # collect historical data
         violations = info.get('total_violations', 0)
 
+        # Track reallocations: 1 if any per-slice PRB allocation changed from last step
+        if self._last_prb_action is not None:
+            realloc = int(np.any(action != self._last_prb_action))
+        else:
+            realloc = 0
+        self._last_prb_action = action.copy()
+
         if self.step_counter < self.steps:
             self.violation_history[self.step_counter] = violations
             self.reward_history[self.step_counter] = reward
             self.action_history[self.step_counter] = action.sum()
+            self.reallocation_history[self.step_counter] = realloc
 
         # increment counter
         self.step_counter += 1
@@ -132,9 +143,10 @@ class ReportWrapper(gym.Wrapper):
             return obs, reward, done, {0:0}
 
     def save_results(self):
-        np.savez(self.file_path, violation = self.violation_history, 
+        np.savez(self.file_path, violation = self.violation_history,
                                 reward = self.reward_history,
-                                resources = self.action_history)
+                                resources = self.action_history,
+                                reallocations = self.reallocation_history)
     
     def set_evaluation(self, eval_steps, new_path = None, change_name = False):
         self.step_counter = self.steps
@@ -142,6 +154,7 @@ class ReportWrapper(gym.Wrapper):
         self.violation_history = np.pad(self.violation_history, [(0, eval_steps)])
         self.reward_history = np.pad(self.reward_history, [(0, eval_steps)])
         self.action_history = np.pad(self.action_history, [(0, eval_steps)])
+        self.reallocation_history = np.pad(self.reallocation_history, [(0, eval_steps)])
         if new_path:
             self.path = new_path
         if change_name:

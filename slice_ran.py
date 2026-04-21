@@ -24,6 +24,7 @@ CBR = 0
 VBR = 1
 
 import numpy as np
+from collections import deque
 from traffic_generators import VbrSource, CbrSource
 
 
@@ -49,8 +50,8 @@ class UE:
         # HARQ
         self.harq_max_retransmissions = harq_max_retransmissions
 
-        # packet queue: list of (bits, arrival_slot, harq_retrans_count)
-        self.packet_queue = []
+        # packet queue: deque of (bits, arrival_slot, harq_retrans_count)
+        self.packet_queue = deque()
         self.current_time = 0    # never reset — needed for correct HOL delay
 
         # HARQ counters — reset each step
@@ -89,7 +90,7 @@ class UE:
                 if harq_retrans > self.harq_max_retransmissions:
                     self.harq_dropped_packets += 1
                     self.packets_dropped += 1
-                    self.packet_queue.pop(0)
+                    self.packet_queue.popleft()
                     self.queue = max(self.queue - pkt_bits, 0)
                 else:
                     self.packet_queue[0] = (pkt_bits, arrival_slot, harq_retrans)
@@ -102,7 +103,7 @@ class UE:
             if pkt_bits <= bits_to_remove:
                 bits_to_remove -= pkt_bits
                 self.packets_delivered += 1
-                self.packet_queue.pop(0)
+                self.packet_queue.popleft()
             else:
                 self.packet_queue[0] = (pkt_bits - bits_to_remove,
                                         arrival_slot, harq_retrans)
