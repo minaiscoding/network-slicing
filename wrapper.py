@@ -67,10 +67,14 @@ class ReportWrapper(gym.Wrapper):
     def reset_history(self):
         self.violation_history = np.zeros((self.steps), dtype = int)
         self.reward_history = np.zeros((self.steps), dtype = float)
+        self.cost_history = np.zeros((self.steps), dtype = float)
         self.action_history = np.zeros((self.steps), dtype = int)
         # Per-slice metrics
         self.violation_per_slice_history = np.zeros((self.steps, self.n_slices), dtype = int)
         self.resource_per_slice_history = np.zeros((self.steps, self.n_slices), dtype = int)
+        # Episode-level return/cost — matches what OmniSafe's logger records
+        self.episode_returns = []
+        self.episode_costs   = []
   
     def reset(self, seed=None, options=None):
         """
@@ -125,6 +129,7 @@ class ReportWrapper(gym.Wrapper):
         if self.step_counter < self.steps:
             self.violation_history[self.step_counter] = violations
             self.reward_history[self.step_counter] = reward
+            self.cost_history[self.step_counter] = float(info.get('sla_cost', 0.0))
             self.action_history[self.step_counter] = action.sum()
             # Per-slice metrics
             if hasattr(per_slice_violations, '__len__') and len(per_slice_violations) == self.n_slices:
@@ -144,20 +149,30 @@ class ReportWrapper(gym.Wrapper):
         info["cost"] = float(violations)
         return obs, reward, terminated, truncated, info
 
+    def record_episode_end(self, episode_reward: float, episode_cost: float) -> None:
+        """Called by the CMDP at the end of each episode with the summed reward and cost."""
+        self.episode_returns.append(float(episode_reward))
+        self.episode_costs.append(float(episode_cost))
+
     def save_results(self):
-        np.savez(self.file_path, 
-                 violation = self.violation_history, 
+        np.savez(self.file_path,
+                 step_count = self.step_counter,
+                 violation = self.violation_history,
                  reward = self.reward_history,
+                 cost = self.cost_history,
                  resources = self.action_history,
                  violation_per_slice = self.violation_per_slice_history,
                  resource_per_slice = self.resource_per_slice_history,
-                 n_slices = self.n_slices)
+                 n_slices = self.n_slices,
+                 episode_return = np.array(self.episode_returns, dtype=float),
+                 episode_cost   = np.array(self.episode_costs,   dtype=float))
     
     def set_evaluation(self, eval_steps, new_path = None, change_name = False):
         self.step_counter = self.steps
         self.steps += eval_steps
         self.violation_history = np.pad(self.violation_history, [(0, eval_steps)])
         self.reward_history = np.pad(self.reward_history, [(0, eval_steps)])
+        self.cost_history = np.pad(self.cost_history, [(0, eval_steps)])
         self.action_history = np.pad(self.action_history, [(0, eval_steps)])
         # Pad per-slice arrays
         self.violation_per_slice_history = np.pad(self.violation_per_slice_history, [(0, eval_steps), (0, 0)])
@@ -248,3 +263,53 @@ class TimerWrapper(gym.Wrapper):
         return obs, reward, False, {0:0} # for keras rl this avoids problems
 
 
+
+
+class PPOReportWrapper(ReportWrapper):
+    """
+    Extension of ReportWrapper that overwrites the logged reward with the
+    CMDP's custom reward when one is supplied.
+    """
+ 
+    def __init__(self, env, steps=2000, control_steps=500, env_id=1,
+                 extra_samples=10, path='./logs/', verbose=False,
+                 continuous_mode=False):
+        super().__init__(
+            env,
+            steps=steps,
+            control_steps=control_steps,
+            env_id=env_id,
+            extra_samples=extra_samples,
+            path=path,
+            verbose=verbose,
+            continuous_mode=continuous_mode,
+        )
+ 
+    # ------------------------------------------------------------------ #
+    #   External hook — CMDP pushes its custom reward here               #
+    # ------------------------------------------------------------------ #
+ 
+    def record_custom_reward(self, value: float) -> None:
+        """
+        Overwrite the reward recorded for the MOST RECENT step with `value`.
+        Call this from the CMDP *after* computing the custom reward, i.e.
+        after self._env.step(...) has already returned.
+        """
+        idx = self.step_counter - 1
+        if 0 <= idx < self.steps:
+            self.reward_history[idx] = float(value)
+ 
+    # ------------------------------------------------------------------ #
+    #   step(): defer to parent, then honour info['custom_reward'] if    #
+    #   present.  This catches the "alternative" usage pattern.          #
+    # ------------------------------------------------------------------ #
+ 
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+ 
+        if isinstance(info, dict) and 'custom_reward' in info:
+            self.record_custom_reward(info['custom_reward'])
+            reward = float(info['custom_reward'])
+ 
+        return obs, reward, terminated, truncated, info
+ 

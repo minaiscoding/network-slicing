@@ -33,7 +33,7 @@ class UE:
     Tracks HOL delay, HARQ retransmissions, and packet-level BLER.
     '''
     def __init__(self, id, slice_ran_id, traffic_source, type,
-                 window=50, slot_length=1e-4, harq_max_retransmissions=5,
+                 window=50, slot_length=1e-3, harq_max_retransmissions=5,
                  fading_type=None):
         self.id = id
         self.slice_ran_id = slice_ran_id
@@ -152,23 +152,24 @@ class MTCdevice:
         self.id = id
         self.repetitions = repetitions
         self.slice_ran_id = slice_ran_id
-
     def __repr__(self):
         return 'MTC {}'.format(self.id)
 
-
 class SliceRANmMTC:
     '''
-    Generates message arrivals at the mMTC devices.
+    Generates message arrivals at the mMTC devices
+    according to the characteristics defined in MTC_description:
+    - n_devices: total number of devices
+    - repetition_set: possible repetitions
+    - period_set: possible times between message arrivals
     '''
-    def __init__(self, rng, id, SLA, MTCdescription, state_variables,
-                 norm_const, slots_per_step):
+    def __init__(self, rng, id, SLA, MTCdescription, state_variables, norm_const, slots_per_step):
         self.type = 'mMTC'
         self.rng = rng
         self.id = id
         self.SLA = SLA
-        self.state_variables = state_variables
-        self.norm_const = norm_const
+        self.state_variables = state_variables # ['devices', 'avg_rep', 'delay']
+        self.norm_const = norm_const # 100 all
         self.slots_per_step = slots_per_step
 
         self.n_devices = MTCdescription['n_devices']
@@ -180,25 +181,33 @@ class SliceRANmMTC:
     def reset(self):
         self.reset_state()
         self.reset_info()
-        self.period = np.ones((self.n_devices), dtype=int)
-        self.t_to_arrival = np.zeros((self.n_devices), dtype=int)
+        self.period = np.ones((self.n_devices), dtype=np.int64)
+        self.t_to_arrival = np.zeros((self.n_devices), dtype=np.int64)
         self.devices = []
         for i in range(self.n_devices):
             repetitions = self.rng.choice(self.repetition_set)
             self.period[i] = self.rng.choice(self.period_set)
-            self.t_to_arrival[i] = 1 + self.rng.choice(
-                np.arange(self.period[i]))
+            self.t_to_arrival[i] = 1 + self.rng.choice(np.arange(self.period[i]))
             self.devices.append(MTCdevice(i, repetitions, self.id))
 
     def slot(self):
         self.slot_counter += 1
+
+        # advance time
         self.t_to_arrival -= 1
+
+        # arrivals
         arrival_list = []
         arrivals = self.t_to_arrival == 0
         indices = np.where(arrivals)
+
+        # print('indices = {}'.format(indices))
         for i in indices[0]:
             arrival_list.append(self.devices[i])
+
+        # prepare for next arrival (deterministic inter arrival time)
         self.t_to_arrival[arrivals] = self.period[arrivals]
+
         return arrival_list, []
 
     def reset_info(self):
@@ -206,26 +215,27 @@ class SliceRANmMTC:
         self.slot_counter = 0
 
     def reset_state(self):
-        self.state = np.full((len(self.state_variables)), 0, dtype=float)
+        self.state = np.full((len(self.state_variables)), 0, dtype = np.float32)
 
     def get_n_variables(self):
         return len(self.state_variables)
 
     def get_state(self):
+        '''convert the info into a normalized vector'''
         for i, var in enumerate(self.state_variables):
-            self.state[i] = self.info[var] / self.norm_const[var]
+            self.state[i] = self.info[var] / self.norm_const[var]        
         return self.state
 
     def update_info(self, delay, avg_rep, devices):
         self.info['delay'] += delay
         self.info['avg_rep'] += avg_rep
         self.info['devices'] += devices
+        
 
     def compute_reward(self):
-        SLA_fulfilled = (self.info['delay'] / self.slots_per_step
-                         < self.SLA['delay'])
-        return not SLA_fulfilled
-
+        '''assesses SLA violations'''
+        SLA_fulfilled = self.info['delay']/self.slots_per_step < self.SLA['delay']
+        return not(SLA_fulfilled)
 
 class SliceRANeMBB:
     '''
@@ -239,7 +249,7 @@ class SliceRANeMBB:
     def __init__(self, rng, user_counter, id, SLA,
                  CBR_description, VBR_description,
                  state_variables, norm_const, slots_per_step,
-                 slot_length=1e-4, harq_max_retransmissions=10,
+                 slot_length=1e-3, harq_max_retransmissions=10,
                  ue_profiles=None):
         self.type = 'eMBB'
         self.rng = rng
@@ -329,9 +339,6 @@ class SliceRANeMBB:
         return True
 
     def cbr_arrivals(self):
-        # --- FIX: skip entirely if CBR traffic is disabled (lambda = 0) ---
-        if self.cbr_arrival_rate <= 0:
-            return []
         if self.cbr_steps_next_arrival == 0:
             inter_arrival_time = self.rng.exponential(
                 1.0 / self.cbr_arrival_rate)
@@ -355,9 +362,7 @@ class SliceRANeMBB:
         return []
 
     def vbr_arrivals(self):
-        # --- FIX: skip entirely if VBR traffic is disabled (lambda = 0) ---
-        if self.vbr_arrival_rate <= 0:
-            return []
+
         if self.vbr_steps_next_arrival == 0:
             ue_id = next(self.user_counter)
             vbr_source = VbrSource(**self.vbr_source_data)
@@ -527,7 +532,7 @@ class SliceRANURLC(SliceRANeMBB):
     def __init__(self, rng, user_counter, id, SLA,
                  CBR_description, VBR_description,
                  state_variables, norm_const, slots_per_step,
-                 slot_length=1e-4, harq_max_retransmissions=5,
+                 slot_length=1e-3, harq_max_retransmissions=5,
                  ue_profiles=None):
         super().__init__(rng, user_counter, id, SLA,
                          CBR_description, VBR_description,
@@ -594,6 +599,7 @@ class SliceRANURLC(SliceRANeMBB):
         cbr_delay: max HOL reached during the step — compare directly,
         no division by slots_per_step.
         """
+        
         cbr_th    = self.info['cbr_th']    / self.observation_time > self.SLA['cbr_th']
         cbr_delay = self.info['cbr_delay']                         < self.SLA['cbr_delay']
 

@@ -94,11 +94,11 @@ DEFAULT_VBR_description = {
 DEFAULT_SLA_embb = {
     'cbr_th': 10e6,
     'cbr_queue': 10e4,
-    'cbr_delay': 10,    # milliseconds
+    'cbr_delay': 50,    # 50 slots = 50 ms
 
     'vbr_th': 15e6,
     'vbr_queue': 15e4,
-    'vbr_delay': 100,   # 100 slots = 10 ms
+    'vbr_delay': 50,    # 50 slots = 50 ms
 }
 
 state_variables_embb = ['cbr_traffic','cbr_th', \
@@ -141,11 +141,11 @@ DEFAULT_URLLC_VBR_description = {
 DEFAULT_SLA_urllc = {
     'cbr_th': 10e6,
     'cbr_queue': 5e4,
-    'cbr_delay': 50,    # 50 slots = 5 ms
+    'cbr_delay': 10,    # 10 slots = 10 ms
 
     'vbr_th': 15e6,
     'vbr_queue': 10e4,
-    'vbr_delay': 5,     # milliseconds — URLLC strict
+    'vbr_delay': 10,    # 10 slots = 10 ms
 }
 
 state_variables_urllc = ['cbr_traffic','cbr_th', \
@@ -242,7 +242,7 @@ def create_env(rng, n,
     sla_config       : optional dict to override default SLA thresholds
                        (see module docstring for layout)
     '''
-    time_per_step = slots_per_step * 1e-4
+    time_per_step = slots_per_step * 1e-3
 
     sc = scenarios[n]
     n_prbs  = sc['n_prbs']
@@ -265,13 +265,13 @@ def create_env(rng, n,
         'cbr_th': 10e6 * time_per_step,
         'cbr_queue': 10e4 * slots_per_step,
         'cbr_snr': 35 * slots_per_step,
-        'cbr_delay': 20,  # milliseconds
+        'cbr_delay': 50 * slots_per_step,  # accumulated HOL (slots), norm = SLA * slots_per_step
 
         'vbr_traffic': 5e6 * time_per_step,
         'vbr_th': 10e6 * time_per_step,
         'vbr_queue': 10e4 * slots_per_step,
         'vbr_snr': 35 * slots_per_step,
-        'vbr_delay': 20,  # milliseconds
+        'vbr_delay': 50 * slots_per_step,  # accumulated HOL (slots), norm = SLA * slots_per_step
     }
 
     # -------------------- mMTC normalization constants -----------------------
@@ -289,13 +289,13 @@ def create_env(rng, n,
         'cbr_th': 5e6 * time_per_step,
         'cbr_queue': 5e3 * slots_per_step,
         'cbr_snr': 35 * slots_per_step,
-        'cbr_delay': 10,  # milliseconds
+        'cbr_delay': 10,  # max HOL (slots), norm = SLA threshold
 
         'vbr_traffic': 2e6 * time_per_step,
         'vbr_th': 7e6 * time_per_step,
         'vbr_queue': 5e3 * slots_per_step,
         'vbr_snr': 35 * slots_per_step,
-        'vbr_delay': 10,  # milliseconds
+        'vbr_delay': 10,  # max HOL (slots), norm = SLA threshold
     }
 
     # ------------------- auxiliary functions -----------------------
@@ -472,7 +472,7 @@ def create_env_from_config(cfg,
         cfg = load_scenario('scenarios.yaml', 'urllc_mix')
         env = create_env_from_config(cfg, rng)
     """
-    time_per_step = slots_per_step * 1e-4
+    time_per_step = slots_per_step * 1e-3
 
     # --- resolve traffic and SLA from the ScenarioConfig ---
     (CBR_description, VBR_description,
@@ -493,13 +493,13 @@ def create_env_from_config(cfg,
         'cbr_th':      10e6 * time_per_step,
         'cbr_queue':   10e4 * slots_per_step,
         'cbr_snr':     35 * slots_per_step,
-        'cbr_delay':   20,
+        'cbr_delay':   50 * slots_per_step,
 
         'vbr_traffic': 5e6 * time_per_step,
         'vbr_th':      10e6 * time_per_step,
         'vbr_queue':   10e4 * slots_per_step,
         'vbr_snr':     35 * slots_per_step,
-        'vbr_delay':   20,
+        'vbr_delay':   50 * slots_per_step,
     }
 
     norm_const_mmtc = {

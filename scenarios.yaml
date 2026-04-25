@@ -29,10 +29,10 @@ scenarios:
         sla:
           cbr_th: 5000000.0
           cbr_queue: 200000.0
-          cbr_delay: 500.0
+          cbr_delay: 50.0
           vbr_th: 5000000.0
           vbr_queue: 200000.0
-          vbr_delay: 500.0
+          vbr_delay: 50.0
 
       mmtc:
         count: 1
@@ -40,7 +40,7 @@ scenarios:
         repetition_set: [2, 4, 8]
         period_set: [20000, 50000, 100000]
         sla:
-          delay: 3000.0
+          delay: 300.0
 
       urllc:
         count: 1
@@ -67,10 +67,10 @@ scenarios:
         sla:
           cbr_th: 200000.0
           cbr_queue: 50000.0
-          cbr_delay: 500.0
+          cbr_delay: 10.0
           vbr_th: 100000.0
           vbr_queue: 100000.0
-          vbr_delay: 500.0
+          vbr_delay: 10.0
 
 
   - name: medium
@@ -100,12 +100,12 @@ scenarios:
           b_rate: 0.06
           packet_size: 1000
         sla:
-          cbr_th: 100000000.0
+          cbr_th: 8000000.0
           cbr_queue: 200000.0
-          cbr_delay: 500.0
-          vbr_th: 100000000.0
+          cbr_delay: 100.0
+          vbr_th: 8000000.0
           vbr_queue: 200000.0
-          vbr_delay: 500.0
+          vbr_delay: 100.0
 
       mmtc:
         count: 1
@@ -113,7 +113,7 @@ scenarios:
         repetition_set: [2, 4, 8, 16, 32, 64, 128]
         period_set: [1000, 5000, 10000, 15000, 20000, 25000, 50000, 100000]
         sla:
-          delay: 3000.0
+          delay: 500.0
 
       urllc:
         count: 1
@@ -138,12 +138,12 @@ scenarios:
           b_rate: 0.06
           packet_size: 500
         sla:
-          cbr_th: 500000.0
+          cbr_th: 200000.0
           cbr_queue: 50000.0
-          cbr_delay: 200.0
-          vbr_th: 200000.0
+          cbr_delay: 25.0
+          vbr_th: 100000.0
           vbr_queue: 100000.0
-          vbr_delay: 200.0
+          vbr_delay: 25.0
 
 
   - name: congested
@@ -175,10 +175,10 @@ scenarios:
         sla:
           cbr_th: 200000000.0
           cbr_queue: 200000.0
-          cbr_delay: 300.0
+          cbr_delay: 50.0
           vbr_th: 200000000.0
           vbr_queue: 200000.0
-          vbr_delay: 300.0
+          vbr_delay: 50.0
 
       mmtc:
         count: 1
@@ -186,7 +186,7 @@ scenarios:
         repetition_set: [2, 4, 8, 16, 32, 64, 128]
         period_set: [1000, 5000, 10000, 15000, 20000, 25000, 50000, 100000]
         sla:
-          delay: 3000.0
+          delay: 300.0
 
       urllc:
         count: 1
@@ -213,7 +213,7 @@ scenarios:
         sla:
           cbr_th: 10000000.0
           cbr_queue: 50000.0
-          cbr_delay: 100.0
+          cbr_delay: 10.0
           vbr_th: 10000000.0
           vbr_queue: 100000.0
-          vbr_delay: 100.0
+          vbr_delay: 10.0

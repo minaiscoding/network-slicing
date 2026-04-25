@@ -44,13 +44,15 @@ def main():
         action = np.array(action, dtype=int)
 
         # ---- STEP ----
-        obs, reward, terminated,  info = env.step(action)
+        obs, reward, terminated, truncated, info = env.step(action)
 
         # ---- KPIs ----
         violations = info.get("total_violations", None)
 
         print(f"Reward: {reward}")
         print(f"Violations: {violations}")
+        print(f"Observation: {obs}")
+        print(f"Info: {info}")
 
         # OPTIONAL: print detailed KPIs if available
         for key, value in info.items():

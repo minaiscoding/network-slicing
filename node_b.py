@@ -6,7 +6,7 @@
 import numpy as np
 
 class NodeB():
-    def __init__(self, slices_l1, slots_per_step, n_prbs, slot_length = 1e-4):
+    def __init__(self, slices_l1, slots_per_step, n_prbs, slot_length = 1e-3):
         self.slices_l1 = slices_l1
         self.n_slices_l1 = len(self.slices_l1)
         self.slots_per_step = slots_per_step
@@ -41,11 +41,13 @@ class NodeB():
         state = np.array([], dtype = float)
         for l1 in self.slices_l1:
             state = np.concatenate((state, l1.get_state()), axis=None)
+            
         return state
     
     def get_info(self, violations = 0, SLA_labels = 0):
         info = {'l1_info': [l1.get_info() for l1 in self.slices_l1], 'SLA_labels': SLA_labels, \
                 'violations': violations, 'n_prbs': [l1.n_prbs for l1 in self.slices_l1]}
+        
         return info
 
     def compute_reward(self):
@@ -94,5 +96,6 @@ class NodeB():
         info = self.get_info(SLA_labels=SLA_labels, violations=violations)
 
         self.steps += 1
+        
 
         return state, info
